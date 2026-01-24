@@ -75,18 +75,18 @@ Route::middleware('jwt.auth')->group(function () {
     Route::delete('/dudi/{id}', [DudiController::class, 'destroy']);
     Route::post('/dudi/{id}/reset-password', [DudiController::class, 'resetPassword']);
 
-    // Placements
+    // Placements - mutations routes MUST come before {id} routes
+    Route::get('/placements/mutations', [PlacementMutationController::class, 'index']);
+    Route::post('/placements/mutations', [PlacementMutationController::class, 'store']);
+    Route::post('/placements/mutations/teacher', [PlacementMutationController::class, 'teacherStore']);
+    Route::put('/placements/mutations/{id}/status', [PlacementMutationController::class, 'updateStatus']);
+
+    // Placements CRUD
     Route::get('/placements', [PlacementController::class, 'index']);
     Route::post('/placements', [PlacementController::class, 'store']);
     Route::get('/placements/{id}', [PlacementController::class, 'show']);
     Route::put('/placements/{id}', [PlacementController::class, 'update']);
     Route::delete('/placements/{id}', [PlacementController::class, 'destroy']);
-
-    // Placement Mutations
-    Route::get('/placements/mutations', [PlacementMutationController::class, 'index']);
-    Route::post('/placements/mutations', [PlacementMutationController::class, 'store']);
-    Route::post('/placements/mutations/teacher', [PlacementMutationController::class, 'teacherStore']);
-    Route::put('/placements/mutations/{id}/status', [PlacementMutationController::class, 'updateStatus']);
 
     // Attendance
     Route::get('/attendance', [AttendanceController::class, 'index']);
