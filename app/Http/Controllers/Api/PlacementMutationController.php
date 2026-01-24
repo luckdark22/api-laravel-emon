@@ -20,37 +20,40 @@ class PlacementMutationController extends Controller
             'newDudi',
             'requestedBy',
             'processedBy',
-            'academicYear'
         ]);
+
+        if ($request->academicYearId && $request->academicYearId !== 'ALL') {
+            $query->where('academic_year_id', $request->academicYearId);
+        }
 
         if ($request->status && $request->status !== 'ALL') {
             $query->where('status', $request->status);
         }
 
-        $mutations = $query->orderBy('created_at', 'desc')->get()->map(function ($m) {
-            return [
-                'id' => $m->id,
-                'studentId' => $m->student_id,
-                'studentName' => $m->student->user->name ?? '',
-                'studentNis' => $m->student->nis ?? '',
-                'oldDudiId' => $m->old_dudi_id,
-                'oldDudiName' => $m->oldDudi->name ?? '',
-                'newDudiId' => $m->new_dudi_id,
-                'newDudiName' => $m->newDudi->name ?? '',
-                'reason' => $m->reason,
-                'status' => $m->status,
-                'rejectionReason' => $m->rejection_reason,
-                'requestedById' => $m->requested_by,
-                'requestedByName' => $m->requestedBy->name ?? '',
-                'processedById' => $m->processed_by,
-                'processedByName' => $m->processedBy->name ?? '',
-                'approvedAt' => $m->approved_at,
-                'createdAt' => $m->created_at,
-                'newTeacherId' => $m->new_teacher_id,
-            ];
+        $limit = $request->limit ?? 10;
+
+        // Use paginate and transform items
+        $mutations = $query->orderBy('created_at', 'desc')->paginate($limit);
+
+        // Transform the collection to match adminService expectations
+        $mutations->getCollection()->transform(function ($m) {
+            return $this->transformMutation($m);
         });
 
-        return response()->json($mutations);
+        return response()->json([
+            'data' => $mutations->items(),
+            'meta' => [
+                'current_page' => $mutations->currentPage(),
+                'last_page' => $mutations->lastPage(),
+                'per_page' => $mutations->perPage(),
+                'total' => $mutations->total(),
+                // Add camelCase alias for FE convenience if needed, though adminService might need snake_case from Laravel default? 
+                // adminService uses "meta" but we don't see what properties it accesses in the snippet.
+                // Assuming standard Laravel meta is fine or FE adapts. 
+                // But mock service returned "lastPage" (camel).
+                'lastPage' => $mutations->lastPage(),
+            ]
+        ]);
     }
 
     public function store(Request $request)
@@ -59,6 +62,7 @@ class PlacementMutationController extends Controller
             'studentId' => 'required|string',
             'newDudiId' => 'required|string',
             'reason' => 'required|string',
+            'newTeacherId' => 'nullable|string',
         ]);
 
         $user = $request->user();
@@ -94,14 +98,102 @@ class PlacementMutationController extends Controller
         return $this->store($request);
     }
 
+    public function teacherIndex(Request $request)
+    {
+        $user = $request->user();
+
+        // Resolve academic year
+        $academicYearId = $request->academicYearId ?? $request->academicYear;
+        if (!$academicYearId) {
+            $activeYear = AcademicYear::where('is_active', true)->first();
+            $academicYearId = $activeYear?->id;
+        }
+
+        $query = PlacementMutation::with([
+            'student.user',
+            'oldDudi',
+            'newDudi',
+            'requestedBy',
+            'processedBy',
+        ]);
+
+        // Filter by:
+        // 1. Requested by this teacher
+        // 2. OR Student currently supervised by this teacher (via active placement)
+        $query->where(function ($q) use ($user) {
+            $q->where('requested_by', $user->id)
+                ->orWhereHas('student.placements', function ($pq) use ($user) {
+                    $pq->where('teacher_id', $user->id)
+                        ->where('status', 'ACTIVE');
+                });
+        });
+
+        if ($academicYearId && $academicYearId !== 'ALL') {
+            $query->where('academic_year_id', $academicYearId);
+        }
+
+        // Ensure student is not soft-deleted
+        $query->whereHas('student', function ($q) {
+            $q->whereNull('deleted_at');
+        });
+
+        if ($request->status && $request->status !== 'ALL') {
+            $query->where('status', $request->status);
+        }
+
+        $limit = $request->limit ?? 10;
+        $mutations = $query->orderBy('created_at', 'desc')->paginate($limit);
+
+        // Transform (Flatten for FE)
+        $mutations->getCollection()->transform(function ($m) {
+            return $this->transformMutation($m);
+        });
+
+        return response()->json([
+            'data' => $mutations->items(),
+            'meta' => [
+                'current_page' => $mutations->currentPage(),
+                'last_page' => $mutations->lastPage(),
+                'per_page' => $mutations->perPage(),
+                'total' => $mutations->total(),
+                'lastPage' => $mutations->lastPage(), // CamelCase alias
+                'page' => $mutations->currentPage(), // Legacy alias
+            ]
+        ]);
+    }
+
+    private function transformMutation($m)
+    {
+        return [
+            'id' => $m->id,
+            'studentId' => $m->student_id,
+            'studentName' => $m->student->user->name ?? '',
+            'currentDudiId' => $m->old_dudi_id,
+            'currentDudiName' => $m->oldDudi->name ?? 'None',
+            'targetDudiId' => $m->new_dudi_id,
+            'targetDudiName' => $m->newDudi->name ?? '',
+            'reason' => $m->reason,
+            'status' => $m->status,
+            'rejectionReason' => $m->rejection_reason,
+            'requestedBy' => $m->requestedBy?->name ?? 'Admin',
+            'requestedByRole' => $m->requestedBy?->role ?? 'ADMIN',
+            'processedBy' => $m->processedBy?->name ?? null,
+            'approvedAt' => $m->approved_at,
+            'requestDate' => $m->created_at->toDateTimeString(),
+            'createdAt' => $m->created_at->toDateTimeString(),
+            'newTeacherId' => $m->new_teacher_id,
+        ];
+    }
+
     public function updateStatus(Request $request, $id)
     {
         $request->validate([
             'status' => 'required|in:APPROVED,REJECTED',
+            'rejectionReason' => 'nullable|string|required_if:status,REJECTED',
         ]);
 
         $user = $request->user();
-        $mutation = PlacementMutation::findOrFail($id);
+        $mutation = PlacementMutation::with(['student.user', 'oldDudi', 'newDudi', 'requestedBy'])->findOrFail($id);
 
         return DB::transaction(function () use ($request, $mutation, $user) {
             $mutation->status = $request->status;
@@ -120,7 +212,7 @@ class PlacementMutationController extends Controller
                 $newPlacement = new Placement();
                 $newPlacement->id = Str::uuid();
                 $newPlacement->student_id = $mutation->student_id;
-                $newPlacement->teacher_id = $mutation->new_teacher_id;
+                $newPlacement->teacher_id = $mutation->new_teacher_id ?? $mutation->requested_by;
                 $newPlacement->dudi_id = $mutation->new_dudi_id;
                 $newPlacement->academic_year_id = $activeYear?->id ?? $mutation->academic_year_id;
                 $newPlacement->status = Placement::STATUS_ACTIVE;
@@ -132,10 +224,7 @@ class PlacementMutationController extends Controller
 
             $mutation->save();
 
-            return response()->json([
-                'id' => $mutation->id,
-                'status' => $mutation->status,
-            ]);
+            return response()->json($this->transformMutation($mutation));
         });
     }
 }

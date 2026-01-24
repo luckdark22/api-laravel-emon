@@ -17,17 +17,45 @@ class AttendanceController extends Controller
 {
     public function index(Request $request)
     {
+        $user = $request->user();
         $query = Attendance::with(['placement.student.user', 'placement.dudi'])
             ->orderBy('date', 'desc')
             ->orderBy('clock_in', 'desc');
+
+        // Teacher Scope
+        if ($user->role === User::ROLE_TEACHER) {
+            $query->whereHas('placement', function ($q) use ($user) {
+                $q->where('teacher_id', $user->id);
+            });
+        }
+        // Mentor Scope
+        if ($user->role === User::ROLE_MENTOR) {
+            $mentor = Mentor::where('user_id', $user->id)->first();
+            if ($mentor && $mentor->dudi_id) {
+                $query->whereHas('placement', function ($q) use ($mentor) {
+                    $q->where('dudi_id', $mentor->dudi_id);
+                });
+            } else {
+                // No DUDI assigned, return empty
+                return response()->json([]);
+            }
+        }
 
         if ($request->date) {
             $query->whereDate('date', $request->date);
         }
 
         if ($request->dudiId && $request->dudiId !== 'ALL') {
+            // For teachers, this just filters deeper. For admin, it's the main filter.
             $query->whereHas('placement', function ($q) use ($request) {
                 $q->where('dudi_id', $request->dudiId);
+            });
+        }
+
+        // Search by student name
+        if ($request->search) {
+            $query->whereHas('placement.student.user', function ($q) use ($request) {
+                $q->where('name', 'like', '%' . $request->search . '%');
             });
         }
 
@@ -57,9 +85,29 @@ class AttendanceController extends Controller
             return [
                 'id' => $a->id,
                 'placementId' => $a->placement_id,
+                // Keep flat fields for backward compatibility or direct usage
                 'studentName' => $a->placement->student->user->name ?? '',
                 'studentNis' => $a->placement->student->nis ?? '',
                 'dudiName' => $a->placement->dudi->name ?? '',
+
+                // Nested structure for Frontend compatibility (PresensiPage.tsx)
+                'placement' => [
+                    'student' => [
+                        'class' => $a->placement->student->class_name ?? '',
+                        'user' => [
+                            'name' => $a->placement->student->user->name ?? '',
+                            'phone' => $a->placement->student->user->phone ?? '',
+                            'avatar_url' => $a->placement->student->user->avatar_url ?? null,
+                        ]
+                    ],
+                    'dudi' => [
+                        'name' => $a->placement->dudi->name ?? '',
+                        'latitude' => $a->placement->dudi->latitude ?? 0,
+                        'longitude' => $a->placement->dudi->longitude ?? 0,
+                        'radius_meters' => $a->placement->dudi->radius_meters ?? 0,
+                    ]
+                ],
+
                 'date' => $a->date?->format('Y-m-d'),
                 'clockIn' => $a->clock_in,
                 'clockOut' => $a->clock_out,
@@ -77,91 +125,81 @@ class AttendanceController extends Controller
     public function status(Request $request)
     {
         $user = $request->user();
-        return $this->getTodayStatus($user->id);
-    }
-
-    public function today(Request $request)
-    {
-        $user = $request->user();
-        return $this->getTodayStatus($user->id);
-    }
-
-    private function getTodayStatus($studentUserId)
-    {
         $today = Carbon::today()->format('Y-m-d');
 
-        $placement = Placement::with('dudi')
-            ->where('student_id', $studentUserId)
+        $placement = Placement::with(['dudi', 'academicYear'])
+            ->where('student_id', $user->id)
             ->where('status', 'ACTIVE')
-            ->whereHas('dudi', function ($q) use ($today) {
-                $q->where(function ($q2) use ($today) {
-                    $q2->whereNull('start_date')->orWhere('start_date', '<=', $today);
-                })->where(function ($q2) use ($today) {
-                    $q2->whereNull('end_date')->orWhere('end_date', '>=', $today);
-                });
-            })
             ->latest('created_at')
             ->first();
 
         if (!$placement) {
-            return response()->json(['status' => 'NO_PLACEMENT']);
+            return response()->json([
+                'status' => 'NO_PLACEMENT',
+                'record' => null,
+                'placement' => null,
+            ]);
         }
 
-        $record = Attendance::where('placement_id', $placement->id)
-            ->whereDate('date', $today)
+        $attendance = Attendance::where('placement_id', $placement->id)
+            ->where('date', $today)
             ->first();
 
-        if (!$record) {
-            return response()->json([
-                'status' => 'BELUM_ABSEN',
-                'placement' => $this->transformPlacement($placement),
-            ]);
-        }
-
-        if ($record->clock_out) {
-            return response()->json([
-                'status' => 'SUDAH_PULANG',
-                'record' => $this->transformRecord($record),
-                'placement' => $this->transformPlacement($placement),
-            ]);
+        $status = 'BELUM_ABSEN';
+        if ($attendance) {
+            $status = $attendance->clock_out ? 'SUDAH_PULANG' : 'SUDAH_MASUK';
         }
 
         return response()->json([
-            'status' => 'SUDAH_MASUK',
-            'record' => $this->transformRecord($record),
-            'placement' => $this->transformPlacement($placement),
+            'status' => $status,
+            'record' => $attendance ? [
+                'id' => $attendance->id,
+                'clockIn' => $attendance->clock_in,
+                'clockOut' => $attendance->clock_out,
+                'status' => $attendance->status,
+            ] : null,
+            'placement' => [
+                'id' => $placement->id,
+                'dudi' => [
+                    'name' => $placement->dudi->name ?? '',
+                    'latitude' => $placement->dudi->latitude ?? 0,
+                    'longitude' => $placement->dudi->longitude ?? 0,
+                    'radiusMeters' => $placement->dudi->radius_meters ?? 100,
+                ],
+                'workStartTime' => $placement->dudi->work_start_time ?? '08:00',
+                'workEndTime' => $placement->dudi->work_end_time ?? '16:00',
+            ],
         ]);
-    }
-
-    private function transformPlacement($p)
-    {
-        return [
-            'id' => $p->id,
-            'dudiId' => $p->dudi_id,
-            'dudiName' => $p->dudi->name ?? '',
-            'dudiAddress' => $p->dudi->address ?? '',
-            'latitude' => $p->dudi->latitude,
-            'longitude' => $p->dudi->longitude,
-            'radiusMeters' => $p->dudi->radius_meters,
-            'workStartTime' => $p->dudi->work_start_time,
-            'workEndTime' => $p->dudi->work_end_time,
-        ];
-    }
-
-    private function transformRecord($r)
-    {
-        return [
-            'id' => $r->id,
-            'date' => $r->date?->format('Y-m-d'),
-            'clockIn' => $r->clock_in,
-            'clockOut' => $r->clock_out,
-            'status' => $r->status,
-        ];
     }
 
     public function filters(Request $request)
     {
-        $dudis = Dudi::select('id', 'name')->orderBy('name')->get();
+        $user = $request->user();
+
+        if ($user->role === User::ROLE_TEACHER) {
+            // Only DUDIs where teacher has active students
+            // Use query builder on Placement to find unique DUDIs
+            $dudiIds = Placement::where('teacher_id', $user->id)
+                ->where('status', 'ACTIVE')
+                ->pluck('dudi_id')
+                ->unique();
+
+            $dudis = Dudi::whereIn('id', $dudiIds)
+                ->select('id', 'name')
+                ->orderBy('name')
+                ->get();
+        } elseif ($user->role === User::ROLE_MENTOR) {
+            $mentor = Mentor::where('user_id', $user->id)->first();
+            if ($mentor && $mentor->dudi_id) {
+                $dudis = Dudi::where('id', $mentor->dudi_id)->select('id', 'name')->get();
+            } else {
+                $dudis = [];
+            }
+        } else {
+            // Admin sees all
+            $dudis = Dudi::select('id', 'name')->orderBy('name')->get();
+        }
+
         return response()->json(['dudis' => $dudis]);
     }
 
@@ -226,7 +264,7 @@ class AttendanceController extends Controller
         }
 
         // Get who already attended
-        $attendedIds = Attendance::whereDate('date', $dateStr)
+        $attendedIds = Attendance::where('date', $dateStr)
             ->whereIn('placement_id', array_map(fn($p) => $p->id, $finals))
             ->pluck('placement_id')
             ->toArray();
@@ -252,6 +290,7 @@ class AttendanceController extends Controller
         $request->validate([
             'latitude' => 'required|numeric',
             'longitude' => 'required|numeric',
+            'photo' => 'nullable|image|max:5120',
         ]);
 
         $user = $request->user();
@@ -268,7 +307,7 @@ class AttendanceController extends Controller
         }
 
         $existing = Attendance::where('placement_id', $placement->id)
-            ->whereDate('date', $today)
+            ->where('date', $today)
             ->first();
 
         if ($existing) {
@@ -283,12 +322,19 @@ class AttendanceController extends Controller
             ? Attendance::STATUS_LATE
             : Attendance::STATUS_ON_TIME;
 
+        $photoPath = null;
+        if ($request->hasFile('photo')) {
+            $file = $request->file('photo');
+            $filename = time() . '_in_' . $user->id . '.' . $file->getClientOriginalExtension();
+            $photoPath = asset('storage/' . $file->storeAs('attendances', $filename, 'public'));
+        }
+
         $attendance = new Attendance();
         $attendance->id = Str::uuid();
         $attendance->placement_id = $placement->id;
         $attendance->date = $today;
         $attendance->clock_in = $timeString;
-        $attendance->clock_in_photo = $request->photo;
+        $attendance->clock_in_photo = $photoPath;
         $attendance->latitude = $request->latitude;
         $attendance->longitude = $request->longitude;
         $attendance->location_address = $request->address ?? '';
@@ -308,6 +354,7 @@ class AttendanceController extends Controller
         $request->validate([
             'latitude' => 'required|numeric',
             'longitude' => 'required|numeric',
+            'photo' => 'nullable|image|max:5120',
         ]);
 
         $user = $request->user();
@@ -323,7 +370,7 @@ class AttendanceController extends Controller
         }
 
         $record = Attendance::where('placement_id', $placement->id)
-            ->whereDate('date', $today)
+            ->where('date', $today)
             ->first();
 
         if (!$record) {
@@ -334,9 +381,16 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Anda sudah melakukan absen pulang.'], 400);
         }
 
+        $photoPath = null;
+        if ($request->hasFile('photo')) {
+            $file = $request->file('photo');
+            $filename = time() . '_out_' . $user->id . '.' . $file->getClientOriginalExtension();
+            $photoPath = asset('storage/' . $file->storeAs('attendances', $filename, 'public'));
+        }
+
         $now = Carbon::now();
         $record->clock_out = $now->format('H:i');
-        $record->clock_out_photo = $request->photo;
+        $record->clock_out_photo = $photoPath;
         $record->latitude = $request->latitude;
         $record->longitude = $request->longitude;
         $record->location_address = $request->address ?? $record->location_address;

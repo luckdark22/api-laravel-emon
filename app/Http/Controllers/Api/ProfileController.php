@@ -14,44 +14,7 @@ class ProfileController extends Controller
 {
     public function show(Request $request)
     {
-        $user = $request->user();
-
-        $profile = [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'phone' => $user->phone,
-            'avatarUrl' => $user->avatar_url,
-            'role' => $user->role,
-            'isDefaultPassword' => $user->is_default_password,
-        ];
-
-        if ($user->role === User::ROLE_STUDENT) {
-            $student = Student::where('user_id', $user->id)->first();
-            if ($student) {
-                $profile['nis'] = $student->nis;
-                $profile['className'] = $student->class_name;
-                $profile['major'] = $student->major;
-                $profile['address'] = $student->address;
-                $profile['bio'] = $student->bio;
-            }
-        } elseif ($user->role === User::ROLE_TEACHER) {
-            $teacher = Teacher::where('user_id', $user->id)->first();
-            if ($teacher) {
-                $profile['nip'] = $teacher->nip;
-                $profile['address'] = $teacher->address;
-                $profile['specialty'] = $teacher->specialty;
-            }
-        } elseif ($user->role === User::ROLE_MENTOR) {
-            $mentor = Mentor::with('dudi')->where('user_id', $user->id)->first();
-            if ($mentor) {
-                $profile['position'] = $mentor->position;
-                $profile['address'] = $mentor->address;
-                $profile['dudiName'] = $mentor->dudi->name ?? '';
-            }
-        }
-
-        return response()->json($profile);
+        return response()->json($this->getProfileResponse($request->user()));
     }
 
     public function update(Request $request)
@@ -99,6 +62,48 @@ class ProfileController extends Controller
             }
         }
 
-        return response()->json(['message' => 'Profile updated successfully']);
+        return response()->json($this->getProfileResponse($user));
+    }
+
+    private function getProfileResponse($user)
+    {
+        $profile = [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'phone' => $user->phone,
+            'avatarUrl' => $user->avatar_url,
+            'role' => $user->role,
+            'isDefaultPassword' => $user->is_default_password,
+        ];
+
+        if ($user->role === User::ROLE_STUDENT) {
+            $student = Student::where('user_id', $user->id)->first();
+            if ($student) {
+                $profile['nis'] = $student->nis;
+                $profile['className'] = $student->class_name;
+                $profile['major'] = $student->major;
+                $profile['address'] = $student->address;
+                $profile['bio'] = $student->bio;
+            }
+        } elseif ($user->role === User::ROLE_TEACHER) {
+            $teacher = Teacher::where('user_id', $user->id)->first();
+            if ($teacher) {
+                $profile['nip'] = $teacher->nip;
+                $profile['address'] = $teacher->address;
+                $profile['specialty'] = $teacher->specialty;
+            }
+        } elseif ($user->role === User::ROLE_MENTOR) {
+            $mentor = Mentor::with('dudi')->where('user_id', $user->id)->first();
+            if ($mentor) {
+                $profile['position'] = $mentor->position;
+                $profile['address'] = $mentor->address;
+                $profile['company'] = $mentor->dudi->name ?? '';
+                $profile['companyAddress'] = $mentor->dudi->address ?? '';
+                $profile['dudiName'] = $mentor->dudi->name ?? ''; // Keep for backward compat
+            }
+        }
+
+        return $profile;
     }
 }

@@ -36,7 +36,7 @@ class HolidayController extends Controller
 
         return response()->json([
             'id' => $holiday->id,
-            'date' => $holiday->date?->format('Y-m-d'),
+            'date' => $holiday->date instanceof \DateTimeInterface ? $holiday->date->format('Y-m-d') : $request->date,
             'description' => $holiday->description,
         ], 201);
     }
@@ -47,7 +47,7 @@ class HolidayController extends Controller
 
         return response()->json([
             'id' => $holiday->id,
-            'date' => $holiday->date?->format('Y-m-d'),
+            'date' => $holiday->date instanceof \DateTimeInterface ? $holiday->date->format('Y-m-d') : $holiday->date,
             'description' => $holiday->description,
         ]);
     }
@@ -65,7 +65,7 @@ class HolidayController extends Controller
 
         return response()->json([
             'id' => $holiday->id,
-            'date' => $holiday->date?->format('Y-m-d'),
+            'date' => $holiday->date instanceof \DateTimeInterface ? $holiday->date->format('Y-m-d') : $request->date,
             'description' => $holiday->description,
         ]);
     }

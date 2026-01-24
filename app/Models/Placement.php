@@ -83,4 +83,9 @@ class Placement extends Model
     {
         return $this->hasMany(Issue::class, 'placement_id', 'id');
     }
+
+    public function finalReport()
+    {
+        return $this->hasOne(FinalReport::class, 'placement_id', 'id');
+    }
 }

@@ -15,7 +15,10 @@ class JournalController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $query = Journal::with(['placement.student.user', 'placement.dudi', 'checkedByMentor.user']);
+        $query = Journal::with(['placement.student.user', 'placement.dudi', 'checkedByMentor.user'])
+            ->whereHas('placement.student', function ($q) {
+                $q->whereNull('deleted_at');
+            });
 
         // Role-based filtering
         if ($user->role === User::ROLE_STUDENT) {
@@ -35,8 +38,30 @@ class JournalController extends Controller
             });
         }
 
+        // Filter by Student ID (Specific Student)
+        if ($request->studentId && $request->studentId !== 'SKIP') {
+            $query->whereHas('placement', function ($q) use ($request) {
+                $q->where('student_id', $request->studentId);
+            });
+        }
+
+        // Filter by Academic Year via Placement
+        if ($request->academicYear) {
+            $query->whereHas('placement', function ($q) use ($request) {
+                $q->whereHas('academicYear', function ($q2) use ($request) {
+                    $q2->where('name', $request->academicYear);
+                });
+            });
+        }
+
         if ($request->status && $request->status !== 'ALL') {
             $query->where('status', $request->status);
+        }
+
+        if ($request->startDate && $request->endDate) {
+            $query->whereBetween('date', [$request->startDate, $request->endDate]);
+        } elseif ($request->startDate) {
+            $query->whereDate('date', $request->startDate);
         }
 
         $journals = $query->orderBy('date', 'desc')->get()->map(function ($j) {
@@ -86,7 +111,17 @@ class JournalController extends Controller
         $journal->date = $request->date;
         $journal->activity = $request->activity;
         $journal->description = $request->description;
-        $journal->attachment_url = $request->attachmentUrl;
+        $journal->description = $request->description;
+
+        if ($request->hasFile('attachment')) {
+            $file = $request->file('attachment');
+            $filename = time() . '_' . $user->id . '.' . $file->getClientOriginalExtension();
+            $path = $file->storeAs('journals', $filename, 'public');
+            $journal->attachment_url = asset('storage/' . $path);
+        } else {
+            $journal->attachment_url = null;
+        }
+
         $journal->status = Journal::STATUS_PENDING;
         $journal->created_at = now();
         $journal->save();
@@ -118,14 +153,21 @@ class JournalController extends Controller
 
     public function update(Request $request, $id)
     {
+        $user = $request->user();
         $journal = Journal::findOrFail($id);
 
         if ($request->has('activity'))
             $journal->activity = $request->activity;
         if ($request->has('description'))
             $journal->description = $request->description;
-        if ($request->has('attachmentUrl'))
-            $journal->attachment_url = $request->attachmentUrl;
+        if ($request->hasFile('attachment')) {
+            $file = $request->file('attachment');
+            $filename = time() . '_' . $user->id . '.' . $file->getClientOriginalExtension();
+            $path = $file->storeAs('journals', $filename, 'public');
+            $journal->attachment_url = asset('storage/' . $path);
+        }
+
+        $journal->status = Journal::STATUS_PENDING;
 
         $journal->save();
 
@@ -151,6 +193,11 @@ class JournalController extends Controller
         ]);
 
         $user = $request->user();
+
+        if ($user->role !== User::ROLE_MENTOR) {
+            return response()->json(['message' => 'Hanya Pembimbing Industri (Mentor) yang dapat memvalidasi jurnal.'], 403);
+        }
+
         $journal = Journal::findOrFail($id);
 
         $journal->status = $request->status;

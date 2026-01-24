@@ -17,9 +17,12 @@ class Setting extends Model
         'description',
     ];
 
+    const CREATED_AT = 'createdAt';
+    const UPDATED_AT = 'updatedAt';
+
     protected $casts = [
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
+        'createdAt' => 'datetime',
+        'updatedAt' => 'datetime',
     ];
 
     public static function getValue($key, $default = null)

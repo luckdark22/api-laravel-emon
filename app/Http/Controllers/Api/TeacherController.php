@@ -14,21 +14,10 @@ class TeacherController extends Controller
 {
     public function index()
     {
+        // Frontend expects structure with nested 'user' object: item.user.name
         $teachers = Teacher::with('user')
             ->whereHas('user')
-            ->get()
-            ->map(function ($teacher) {
-                return [
-                    'id' => $teacher->user_id,
-                    'name' => $teacher->user->name,
-                    'email' => $teacher->user->email,
-                    'phone' => $teacher->user->phone,
-                    'avatarUrl' => $teacher->user->avatar_url,
-                    'nip' => $teacher->nip,
-                    'address' => $teacher->address,
-                    'specialty' => $teacher->specialty,
-                ];
-            });
+            ->get();
 
         return response()->json($teachers);
     }
@@ -43,7 +32,7 @@ class TeacherController extends Controller
 
         return DB::transaction(function () use ($request) {
             $userId = Str::uuid()->toString();
-            $defaultPassword = 'guru123';
+            $defaultPassword = '123456'; // User requested default
 
             $user = new User();
             $user->id = $userId;
@@ -62,29 +51,95 @@ class TeacherController extends Controller
             $teacher->specialty = $request->specialty;
             $teacher->save();
 
-            return response()->json([
+            // Return flattened structure for store response if needed, 
+            // OR consistent structure. adminApi.addTeacher expects:
+            // return { id: item.user_id, name: item.user.name... } -> based on current implementation
+            // But api.post returns `item` which is response.data
+            // adminService.ts Line 203: const item = response.data;
+            // Let's return the simplified object because adminService manually reconstructs the return
+
+            // Wait, adminService.ts (Line 203) uses response.data.user.name
+            // Actually: 
+            // const item = response.data;
+            // return { id: item.user_id, name: item.user.name ... }
+            // So we must return nested structure here too to key match, 
+            // OR we return what we constructed below and update the frontend service?
+            // The previous code returned:
+            /*
+             return response()->json([
                 'id' => $userId,
-                'name' => $user->name,
-                'email' => $user->email,
-                'nip' => $teacher->nip,
-            ], 201);
+                'name' => $user->name, 
+                ...
+             ])
+            */
+            // If we look at adminService.ts addTeacher:
+            /*
+             const item = response.data;
+             return { id: item.user_id, name: item.user.name ... }
+            */
+            // This suggests it EXPECTS the same nested structure as GET /teachers or similar.
+            // But the PREVIOUS code returned flat. Meaning ADD operation would CRASH the frontend service return mapping if not fixed.
+
+            // Let's fix this to be consistent by reloading the model
+
+            return response()->json(
+                Teacher::with('user')->find($userId)
+                ,
+                201
+            );
         });
+    }
+
+    public function import(Request $request)
+    {
+        $request->validate([
+            '*.name' => 'required|string',
+            '*.email' => 'required|email',
+            '*.nip' => 'required|string',
+        ]);
+
+        $data = $request->all(); // Array of teachers
+
+        DB::transaction(function () use ($data) {
+            foreach ($data as $row) {
+                // Check if exists (including soft deleted)
+                if (Teacher::withTrashed()->where('nip', $row['nip'])->exists()) {
+                    continue; // Skip existing
+                }
+                if (User::withTrashed()->where('email', $row['email'])->exists()) {
+                    continue; // Skip existing
+                }
+
+                $userId = Str::uuid()->toString();
+                $defaultPassword = '123456';
+
+                $user = new User();
+                $user->id = $userId;
+                $user->name = $row['name'];
+                $user->email = $row['email'];
+                $user->password_hash = Hash::make($defaultPassword);
+                $user->role = User::ROLE_TEACHER;
+                $user->phone = $row['phone'] ?? null;
+                $user->is_default_password = true;
+                $user->save();
+
+                $teacher = new Teacher();
+                $teacher->user_id = $userId;
+                $teacher->nip = $row['nip'];
+                $teacher->address = $row['address'] ?? null;
+                $teacher->specialty = $row['specialty'] ?? null;
+                $teacher->save();
+            }
+        });
+
+        return response()->json(['message' => 'Import successful']);
     }
 
     public function show($id)
     {
         $teacher = Teacher::with('user')->where('user_id', $id)->firstOrFail();
-
-        return response()->json([
-            'id' => $teacher->user_id,
-            'name' => $teacher->user->name,
-            'email' => $teacher->user->email,
-            'phone' => $teacher->user->phone,
-            'avatarUrl' => $teacher->user->avatar_url,
-            'nip' => $teacher->nip,
-            'address' => $teacher->address,
-            'specialty' => $teacher->specialty,
-        ]);
+        // Return raw nested structure to allow frontend to map it
+        return response()->json($teacher);
     }
 
     public function update(Request $request, $id)
@@ -107,12 +162,7 @@ class TeacherController extends Controller
         $teacher->user->save();
         $teacher->save();
 
-        return response()->json([
-            'id' => $teacher->user_id,
-            'name' => $teacher->user->name,
-            'email' => $teacher->user->email,
-            'nip' => $teacher->nip,
-        ]);
+        return response()->json($teacher);
     }
 
     public function destroy($id)
@@ -127,12 +177,12 @@ class TeacherController extends Controller
     public function resetPassword($id)
     {
         $teacher = Teacher::with('user')->where('user_id', $id)->firstOrFail();
-        $defaultPassword = 'guru123';
+        $defaultPassword = '123456'; // User requested default
 
         $teacher->user->password_hash = Hash::make($defaultPassword);
         $teacher->user->is_default_password = true;
         $teacher->user->save();
 
-        return response()->json(['message' => 'Password reset successfully']);
+        return response()->json(['message' => 'Password reset successfully. Default: 123456']);
     }
 }

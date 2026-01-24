@@ -55,15 +55,16 @@ Route::middleware('jwt.auth')->group(function () {
     Route::post('/students', [StudentController::class, 'store']);
     Route::post('/students/import', [StudentController::class, 'import']);
     Route::get('/students/{id}', [StudentController::class, 'show']);
-    Route::put('/students/{id}', [StudentController::class, 'update']);
+    Route::match(['put', 'patch'], '/students/{id}', [StudentController::class, 'update']);
     Route::delete('/students/{id}', [StudentController::class, 'destroy']);
     Route::post('/students/{id}/reset-password', [StudentController::class, 'resetPassword']);
 
     // Teachers
     Route::get('/teachers', [TeacherController::class, 'index']);
+    Route::post('/teachers/import', [TeacherController::class, 'import']); // Must be before /{id}
     Route::post('/teachers', [TeacherController::class, 'store']);
     Route::get('/teachers/{id}', [TeacherController::class, 'show']);
-    Route::put('/teachers/{id}', [TeacherController::class, 'update']);
+    Route::match(['put', 'patch'], '/teachers/{id}', [TeacherController::class, 'update']);
     Route::delete('/teachers/{id}', [TeacherController::class, 'destroy']);
     Route::post('/teachers/{id}/reset-password', [TeacherController::class, 'resetPassword']);
 
@@ -71,7 +72,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/dudi', [DudiController::class, 'index']);
     Route::post('/dudi', [DudiController::class, 'store']);
     Route::get('/dudi/{id}', [DudiController::class, 'show']);
-    Route::put('/dudi/{id}', [DudiController::class, 'update']);
+    Route::match(['put', 'patch'], '/dudi/{id}', [DudiController::class, 'update']);
     Route::delete('/dudi/{id}', [DudiController::class, 'destroy']);
     Route::post('/dudi/{id}/reset-password', [DudiController::class, 'resetPassword']);
 
@@ -79,13 +80,14 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/placements/mutations', [PlacementMutationController::class, 'index']);
     Route::post('/placements/mutations', [PlacementMutationController::class, 'store']);
     Route::post('/placements/mutations/teacher', [PlacementMutationController::class, 'teacherStore']);
-    Route::put('/placements/mutations/{id}/status', [PlacementMutationController::class, 'updateStatus']);
+    Route::get('/placements/mutations/teacher', [PlacementMutationController::class, 'teacherIndex']);
+    Route::match(['put', 'patch'], '/placements/mutations/{id}/status', [PlacementMutationController::class, 'updateStatus']);
 
     // Placements CRUD
     Route::get('/placements', [PlacementController::class, 'index']);
     Route::post('/placements', [PlacementController::class, 'store']);
     Route::get('/placements/{id}', [PlacementController::class, 'show']);
-    Route::put('/placements/{id}', [PlacementController::class, 'update']);
+    Route::match(['put', 'patch'], '/placements/{id}', [PlacementController::class, 'update']);
     Route::delete('/placements/{id}', [PlacementController::class, 'destroy']);
 
     // Attendance
@@ -101,27 +103,28 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/journals', [JournalController::class, 'index']);
     Route::post('/journals', [JournalController::class, 'store']);
     Route::get('/journals/{id}', [JournalController::class, 'show']);
-    Route::put('/journals/{id}', [JournalController::class, 'update']);
+    Route::match(['put', 'patch'], '/journals/{id}', [JournalController::class, 'update']);
     Route::delete('/journals/{id}', [JournalController::class, 'destroy']);
-    Route::put('/journals/{id}/status', [JournalController::class, 'updateStatus']);
+    Route::match(['put', 'patch'], '/journals/{id}/status', [JournalController::class, 'updateStatus']);
 
     // Leaves
     Route::get('/leaves', [LeaveController::class, 'index']);
     Route::post('/leaves', [LeaveController::class, 'store']);
     Route::get('/leaves/{id}', [LeaveController::class, 'show']);
-    Route::put('/leaves/{id}', [LeaveController::class, 'update']);
+    Route::match(['put', 'patch'], '/leaves/{id}', [LeaveController::class, 'update']);
     Route::delete('/leaves/{id}', [LeaveController::class, 'destroy']);
-    Route::put('/leaves/{id}/status', [LeaveController::class, 'updateStatus']);
+    Route::match(['put', 'patch'], '/leaves/{id}/status', [LeaveController::class, 'updateStatus']);
 
     // Issues
     Route::get('/issues', [IssueController::class, 'index']);
     Route::post('/issues', [IssueController::class, 'store']);
     Route::get('/issues/admin', [IssueController::class, 'adminIndex']);
     Route::get('/issues/teacher', [IssueController::class, 'teacherIndex']);
-    Route::put('/issues/{id}/resolve', [IssueController::class, 'resolve']);
+    Route::match(['put', 'patch'], '/issues/{id}/resolve', [IssueController::class, 'resolve']);
 
     // Visits
     Route::get('/visits', [VisitController::class, 'index']);
+    Route::get('/visits/locations', [VisitController::class, 'locations']);
     Route::post('/visits', [VisitController::class, 'store']);
     Route::get('/visits/{id}', [VisitController::class, 'show']);
     Route::put('/visits/{id}', [VisitController::class, 'update']);
@@ -137,10 +140,13 @@ Route::middleware('jwt.auth')->group(function () {
 
     // Reports
     Route::get('/reports', [ReportController::class, 'index']);
+    Route::get('/reports/me', [ReportController::class, 'me']);
+    Route::post('/reports/upload', [ReportController::class, 'upload']);
     Route::post('/reports', [ReportController::class, 'store']);
     Route::get('/reports/{id}', [ReportController::class, 'show']);
-    Route::put('/reports/{id}', [ReportController::class, 'update']);
-    Route::put('/reports/{id}/review', [ReportController::class, 'review']);
+    Route::match(['put', 'patch'], '/reports/{id}', [ReportController::class, 'update']);
+    Route::delete('/reports/{id}', [ReportController::class, 'destroy']);
+    Route::match(['put', 'patch'], '/reports/{id}/review', [ReportController::class, 'review']);
     Route::get('/reports/student/{id}', [ReportController::class, 'studentReports']);
 
     // Dashboard
@@ -157,11 +163,13 @@ Route::middleware('jwt.auth')->group(function () {
 
     // Profile
     Route::get('/profile', [ProfileController::class, 'show']);
-    Route::put('/profile', [ProfileController::class, 'update']);
+    Route::match(['put', 'patch'], '/profile', [ProfileController::class, 'update']);
+    Route::match(['post', 'put'], '/profile/change-password', [AuthController::class, 'changePassword']);
 
     // Settings
     Route::get('/settings', [SettingController::class, 'index']);
-    Route::put('/settings', [SettingController::class, 'update']);
+    Route::match(['put', 'patch'], '/settings', [SettingController::class, 'update']);
+    Route::post('/settings/upload-logo', [SettingController::class, 'uploadLogo']);
 
     // Holidays
     Route::get('/holidays', [HolidayController::class, 'index']);
@@ -176,4 +184,16 @@ Route::middleware('jwt.auth')->group(function () {
     // Chat
     Route::get('/chat', [ChatController::class, 'index']);
     Route::post('/chat', [ChatController::class, 'store']);
+
 });
+
+// Storage Proxy (CORS fix for artisan serve) - Public Access
+Route::get('/storage/{path}', function ($path) {
+    $fullPath = storage_path('app/public/' . $path);
+    if (!file_exists($fullPath))
+        abort(404);
+    return response()->file($fullPath, [
+        'Access-Control-Allow-Origin' => '*',
+        'Access-Control-Allow-Methods' => 'GET, OPTIONS',
+    ]);
+})->where('path', '.*');

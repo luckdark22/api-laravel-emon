@@ -39,7 +39,10 @@ class ChatController extends Controller
                     'id' => $m->id,
                     'placementId' => $m->placementId,
                     'senderId' => $m->senderId,
-                    'senderName' => $m->sender->name ?? '',
+                    'sender' => [
+                        'name' => $m->sender->name ?? '',
+                        'role' => $m->sender->role ?? '',
+                    ],
                     'role' => $m->role,
                     'message' => $m->message,
                     'createdAt' => $m->createdAt,

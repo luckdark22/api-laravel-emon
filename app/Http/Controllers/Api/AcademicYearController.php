@@ -11,7 +11,16 @@ class AcademicYearController extends Controller
 {
     public function index()
     {
-        $years = AcademicYear::orderBy('created_at', 'desc')->get();
+        // Removed orderBy created_at to avoid potential missing column error
+        $years = AcademicYear::all()->map(function ($year) {
+            return [
+                'id' => $year->id,
+                'name' => $year->name,
+                'isActive' => $year->is_active,
+                'startDate' => $year->start_date,
+                'endDate' => $year->end_date,
+            ];
+        });
         return response()->json($years);
     }
 
@@ -31,13 +40,25 @@ class AcademicYearController extends Controller
         $year->is_active = false;
         $year->save();
 
-        return response()->json($year, 201);
+        return response()->json([
+            'id' => $year->id,
+            'name' => $year->name,
+            'isActive' => $year->is_active,
+            'startDate' => $year->start_date,
+            'endDate' => $year->end_date,
+        ], 201);
     }
 
     public function show($id)
     {
         $year = AcademicYear::findOrFail($id);
-        return response()->json($year);
+        return response()->json([
+            'id' => $year->id,
+            'name' => $year->name,
+            'isActive' => $year->is_active,
+            'startDate' => $year->start_date,
+            'endDate' => $year->end_date,
+        ]);
     }
 
     public function update(Request $request, $id)
@@ -53,7 +74,13 @@ class AcademicYearController extends Controller
 
         $year->save();
 
-        return response()->json($year);
+        return response()->json([
+            'id' => $year->id,
+            'name' => $year->name,
+            'isActive' => $year->is_active,
+            'startDate' => $year->start_date,
+            'endDate' => $year->end_date,
+        ]);
     }
 
     public function destroy($id)
@@ -67,7 +94,16 @@ class AcademicYearController extends Controller
     public function active()
     {
         $year = AcademicYear::where('is_active', true)->first();
-        return response()->json($year);
+        if (!$year)
+            return response()->json(null);
+
+        return response()->json([
+            'id' => $year->id,
+            'name' => $year->name,
+            'isActive' => $year->is_active,
+            'startDate' => $year->start_date,
+            'endDate' => $year->end_date,
+        ]);
     }
 
     public function activate($id)
@@ -80,6 +116,12 @@ class AcademicYearController extends Controller
         $year->is_active = true;
         $year->save();
 
-        return response()->json($year);
+        return response()->json([
+            'id' => $year->id,
+            'name' => $year->name,
+            'isActive' => $year->is_active,
+            'startDate' => $year->start_date,
+            'endDate' => $year->end_date,
+        ]);
     }
 }

@@ -15,6 +15,7 @@ class ChatMessage extends Model
     public $incrementing = false;
     protected $keyType = 'string';
     public $timestamps = false;
+    const DELETED_AT = 'deletedAt';
 
     protected $fillable = [
         'id',

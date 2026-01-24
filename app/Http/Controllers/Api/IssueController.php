@@ -85,23 +85,39 @@ class IssueController extends Controller
             return [
                 'id' => $i->id,
                 'placementId' => $i->placement_id,
-                'studentName' => $i->placement->student->user->name ?? '',
-                'studentNis' => $i->placement->student->nis ?? '',
+                // Return nested objects to satisfy issueApi.ts logic (issue.placement.student...)
+                'placement' => [
+                    'student' => [
+                        'user' => [
+                            'id' => $i->placement->student->user->id ?? null,
+                            'name' => $i->placement->student->user->name ?? 'Unknown',
+                        ],
+                        'nis' => $i->placement->student->nis ?? '',
+                    ],
+                    'dudi' => [
+                        'name' => $i->placement->dudi->name ?? 'Unknown',
+                    ],
+                    'teacher' => [
+                        'user' => [
+                            'name' => $i->placement->teacher->user->name ?? '',
+                        ]
+                    ]
+                ],
+                'studentName' => $i->placement->student->user->name ?? '', // Fallback flat
                 'dudiName' => $i->placement->dudi->name ?? '',
-                'teacherName' => $i->placement->teacher->user->name ?? '',
                 'category' => $i->category,
                 'severity' => $i->severity,
                 'description' => $i->description,
                 'status' => $i->status,
                 'resolutionNotes' => $i->resolution_notes,
                 'resolvedAt' => $i->resolved_at,
-                'reporterId' => $i->reporter_id,
-                'reporterName' => $i->reporter->name ?? '',
-                'resolverId' => $i->resolver_id,
-                'resolverName' => $i->resolver->name ?? '',
-                'academicYearId' => $i->academic_year_id,
-                'academicYearName' => $i->academicYear->name ?? '',
-                'createdAt' => $i->created_at,
+                'reporter' => [
+                    'name' => $i->reporter->name ?? '',
+                ],
+                'resolver' => [
+                    'name' => $i->resolver->name ?? '',
+                ],
+                'createdAt' => $i->created_at, // Used as 'date'
             ];
         });
     }
@@ -109,23 +125,38 @@ class IssueController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'placementId' => 'required|string',
+            // FE sends studentId, NOT placementId
+            'studentId' => 'required|string',
             'description' => 'required|string',
+            'category' => 'required|string', // FE sends category
+            'severity' => 'required|string', // FE sends severity
+            'date' => 'nullable|date',      // FE sends date
         ]);
 
         $user = $request->user();
         $activeYear = AcademicYear::where('is_active', true)->first();
 
+        // Find Active Placement for Student
+        $placement = Placement::where('student_id', $request->studentId)
+            ->where('status', 'ACTIVE') // Only active placement
+            // Optional: Filter by academic year? Usually active is unique enough.
+            ->first();
+
+        if (!$placement) {
+            return response()->json(['message' => 'Student does not have an active placement.'], 422);
+        }
+
         $issue = new Issue();
         $issue->id = Str::uuid();
-        $issue->placement_id = $request->placementId;
+        $issue->placement_id = $placement->id;
         $issue->reporter_id = $user->id;
         $issue->academic_year_id = $activeYear?->id;
         $issue->category = $request->category;
         $issue->severity = $request->severity;
         $issue->description = $request->description;
         $issue->status = Issue::STATUS_OPEN;
-        $issue->created_at = now();
+        // Use provided date or now
+        $issue->created_at = $request->date ? \Carbon\Carbon::parse($request->date) : now();
         $issue->save();
 
         return response()->json([
@@ -137,14 +168,21 @@ class IssueController extends Controller
     public function resolve(Request $request, $id)
     {
         $request->validate([
-            'resolutionNotes' => 'required|string',
+            // Accept resolution (FE) or resolutionNotes
+            'resolution' => 'nullable|string',
+            'resolutionNotes' => 'nullable|string',
         ]);
+
+        $notes = $request->resolution ?? $request->resolutionNotes;
+        if (!$notes) {
+            return response()->json(['message' => 'Resolution notes are required.'], 422);
+        }
 
         $user = $request->user();
         $issue = Issue::findOrFail($id);
 
         $issue->status = Issue::STATUS_RESOLVED;
-        $issue->resolution_notes = $request->resolutionNotes;
+        $issue->resolution_notes = $notes;
         $issue->resolver_id = $user->id;
         $issue->resolved_at = now();
         $issue->save();

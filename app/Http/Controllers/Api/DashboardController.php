@@ -23,24 +23,59 @@ class DashboardController extends Controller
 {
     public function admin(Request $request)
     {
-        $academicYearId = $request->academicYearId ?? $request->academicYear;
+        $academicYearParam = $request->academicYearId ?? $request->academicYear;
         $dudiId = $request->dudiId;
+
+        // Resolve academic year - could be ID or name
+        $academicYear = null;
+        $academicYearId = null;
+        if ($academicYearParam && $academicYearParam !== 'ALL') {
+            // Try to find by ID first, then by name
+            $academicYear = AcademicYear::find($academicYearParam)
+                ?? AcademicYear::where('name', $academicYearParam)->first();
+        } else {
+            // Default to active academic year
+            $academicYear = AcademicYear::where('is_active', true)->first();
+        }
+        $academicYearId = $academicYear?->id;
 
         $placementQuery = Placement::where('status', 'ACTIVE');
 
-        if ($academicYearId && $academicYearId !== 'ALL') {
-            $placementQuery->where('academic_year_id', $academicYearId);
-        }
         if ($dudiId && $dudiId !== 'ALL') {
             $placementQuery->where('dudi_id', $dudiId);
         }
 
-        $activePlacements = $placementQuery->count();
-        $totalStudents = Student::whereNull('deleted_at')->count();
+        // Filter by the student's registered year name to match $totalStudents logic
+        if ($academicYear) {
+            $placementQuery->whereHas('student', function ($q) use ($academicYear) {
+                $q->where('academic_year', $academicYear->name);
+            });
+        }
+
+        // Filter UNIQUE students who have an active placement AND are registered for this year
+        // AND ensure student is not soft-deleted
+        $activePlacements = $placementQuery->whereHas('student', function ($q) {
+            $q->whereNull('deleted_at');
+        })->distinct('student_id')->count('student_id');
+
+        // Filter total students by academic year if specified
+        $studentQuery = Student::whereNull('deleted_at');
+        if ($academicYear) {
+            $studentQuery->where('academic_year', $academicYear->name);
+        }
+        $totalStudents = $studentQuery->count();
+
         $totalDudi = Dudi::whereNull('deleted_at')->count();
 
-        // Open issues
-        $openIssues = Issue::where('status', 'OPEN')->count();
+        // Open issues - exclude if student or dudi is deleted
+        $openIssues = Issue::where('status', 'OPEN')
+            ->whereHas('placement.student', function ($q) {
+                $q->whereNull('deleted_at');
+            })
+            ->whereHas('placement.dudi', function ($q) {
+                $q->whereNull('deleted_at');
+            })
+            ->count();
 
         // Calculate placement percentage
         $placementPercentage = $totalStudents > 0
@@ -51,10 +86,51 @@ class DashboardController extends Controller
         $attendanceTrend = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
-            $dayAttendances = Attendance::whereDate('date', $date)->get();
+
+            // Filter attendance query - exclude soft-deleted students
+            $dayAttendancesQuery = Attendance::whereDate('date', $date)
+                ->whereHas('placement', function ($q) use ($academicYearId, $dudiId) {
+                    if ($academicYearId) {
+                        $q->where('academic_year_id', $academicYearId);
+                    }
+                    if ($dudiId && $dudiId !== 'ALL') {
+                        $q->where('dudi_id', $dudiId);
+                    }
+                })
+                ->whereHas('placement.student', function ($q) {
+                    $q->whereNull('deleted_at');
+                });
+
+            $dayAttendances = $dayAttendancesQuery->get();
+
             $hadir = $dayAttendances->whereIn('status', ['ON_TIME', 'LATE'])->count();
             $izin = $dayAttendances->whereIn('status', ['PERMIT', 'SICK'])->count();
-            $alpa = $dayAttendances->where('status', 'ABSENT')->count();
+
+            // Calculate Alpha Dynamically (Not stored in DB)
+            $alpa = 0;
+            $isWeekend = $date->isWeekend();
+            $isHoliday = Holiday::whereDate('date', $date)->exists();
+
+            if (!$isWeekend && !$isHoliday) {
+                // Get expected active students count - exclude soft-deleted
+                $eligiblePlacementsQuery = Placement::where('status', 'ACTIVE')
+                    ->whereHas('student', function ($q) {
+                        $q->whereNull('deleted_at');
+                    });
+
+                if ($academicYearId) {
+                    $eligiblePlacementsQuery->where('academic_year_id', $academicYearId);
+                }
+                if ($dudiId && $dudiId !== 'ALL') {
+                    $eligiblePlacementsQuery->where('dudi_id', $dudiId);
+                }
+
+                $expectedAttendance = $eligiblePlacementsQuery->distinct('student_id')->count('student_id');
+                $actualAttendance = $hadir + $izin;
+
+                // Any active student without attendance record is Alpha
+                $alpa = max(0, $expectedAttendance - $actualAttendance);
+            }
 
             $attendanceTrend[] = [
                 'day' => $date->locale('id')->isoFormat('ddd'),
@@ -78,8 +154,14 @@ class DashboardController extends Controller
                 ];
             });
 
-        // Recent activities
+        // Recent activities - exclude soft-deleted
         $recentActivities = Attendance::with(['placement.student.user', 'placement.dudi'])
+            ->whereHas('placement.student', function ($q) {
+                $q->whereNull('deleted_at');
+            })
+            ->whereHas('placement.dudi', function ($q) {
+                $q->whereNull('deleted_at');
+            })
             ->orderBy('created_at', 'desc')
             ->limit(5)
             ->get()
@@ -98,7 +180,7 @@ class DashboardController extends Controller
         return response()->json([
             'stats' => [
                 'totalStudents' => $totalStudents,
-                'eligibleStudents' => $activePlacements,
+                'mappedStudents' => $activePlacements,  // Renamed from eligibleStudents to match frontend
                 'totalDudi' => $totalDudi,
                 'placementPercentage' => $placementPercentage,
                 'issueCount' => $openIssues,
@@ -111,40 +193,85 @@ class DashboardController extends Controller
 
     public function adminAnalysis(Request $request)
     {
-        $academicYearId = $request->academicYearId;
+        $academicYearId = $request->academicYearId ?? $request->academicYear;
 
-        // Attendance trend (last 7 days)
+        // Attendance trend (last 7 days) - exclude soft-deleted
         $attendanceTrend = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
-            $count = Attendance::whereDate('date', $date)->count();
+            $dayAttendances = Attendance::whereDate('date', $date)
+                ->whereHas('placement.student', function ($q) {
+                    $q->whereNull('deleted_at');
+                })
+                ->get();
+
             $attendanceTrend[] = [
                 'date' => $date->format('Y-m-d'),
-                'day' => $date->format('D'),
-                'count' => $count,
+                'activeCount' => $dayAttendances->count(),
+                'presentCount' => $dayAttendances->where('status', 'ON_TIME')->count(),
+                'lateCount' => $dayAttendances->where('status', 'LATE')->count(),
+                'absentCount' => $dayAttendances->whereIn('status', ['ABSENT', 'PERMIT', 'SICK'])->count(),
             ];
         }
 
-        // Attendance by status
-        $attendanceByStatus = Attendance::select('status', DB::raw('count(*) as count'))
-            ->groupBy('status')
-            ->get();
+        // Journal trend (last 7 days) - exclude soft-deleted
+        $journalTrend = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $date = Carbon::today()->subDays($i);
+            $dayJournals = Journal::whereDate('date', $date)
+                ->whereHas('placement.student', function ($q) {
+                    $q->whereNull('deleted_at');
+                })
+                ->get();
 
-        // Issues by category
-        $issuesByCategory = Issue::select('category', DB::raw('count(*) as count'))
-            ->groupBy('category')
-            ->get();
+            $journalTrend[] = [
+                'date' => $date->format('Y-m-d'),
+                'submittedCount' => $dayJournals->count(),
+                'approvedCount' => $dayJournals->where('status', 'APPROVED')->count(),
+            ];
+        }
 
-        // Journal status distribution
-        $journalByStatus = Journal::select('status', DB::raw('count(*) as count'))
-            ->groupBy('status')
-            ->get();
+        // Visit stats - exclude soft-deleted teachers if needed, but primarily focusing on student/dudi mapping for now
+        $totalVisits = Visit::whereHas('teacher', function ($q) {
+            $q->whereNull('deleted_at');
+        })->count();
+        $thisMonthVisits = Visit::whereHas('teacher', function ($q) {
+            $q->whereNull('deleted_at');
+        })
+            ->whereMonth('visit_date', now()->month)
+            ->whereYear('visit_date', now()->year)
+            ->count();
+
+        // Placement stats - exclude soft-deleted students
+        $activePlacements = Placement::where('status', 'ACTIVE')
+            ->whereHas('student', function ($q) {
+                $q->whereNull('deleted_at');
+            })
+            ->distinct('student_id')->count('student_id');
+
+        $finishedPlacements = Placement::where('status', 'FINISHED')
+            ->whereHas('student', function ($q) {
+                $q->whereNull('deleted_at');
+            })
+            ->distinct('student_id')->count('student_id');
+
+        $totalPlacements = Placement::whereHas('student', function ($q) {
+            $q->whereNull('deleted_at');
+        })
+            ->distinct('student_id')->count('student_id');
 
         return response()->json([
             'attendanceTrend' => $attendanceTrend,
-            'attendanceByStatus' => $attendanceByStatus,
-            'issuesByCategory' => $issuesByCategory,
-            'journalByStatus' => $journalByStatus,
+            'journalTrend' => $journalTrend,
+            'visitStats' => [
+                'totalVisits' => $totalVisits,
+                'thisMonthVisits' => $thisMonthVisits,
+            ],
+            'placementStats' => [
+                'active' => $activePlacements,
+                'finished' => $finishedPlacements,
+                'total' => $totalPlacements,
+            ],
         ]);
     }
 
@@ -161,8 +288,14 @@ class DashboardController extends Controller
         $stats = $dudis->map(function ($dudi) use ($activeYear) {
             $placements = Placement::where('dudi_id', $dudi->id)
                 ->where('status', 'ACTIVE')
+                ->whereHas('student', function ($sq) {
+                    $sq->whereNull('deleted_at');
+                })
                 ->when($activeYear, function ($q) use ($activeYear) {
                     $q->where('academic_year_id', $activeYear->id);
+                    $q->whereHas('student', function ($sq) use ($activeYear) {
+                        $sq->where('academic_year', $activeYear->name);
+                    });
                 })
                 ->pluck('id');
 
@@ -230,103 +363,209 @@ class DashboardController extends Controller
 
     public function dudiDetails(Request $request, $id)
     {
-        $academicYearId = $request->academicYearId;
+        $academicYearId = $request->academicYearId ?? $request->academicYear;
 
-        $activeYear = $academicYearId && $academicYearId !== 'ALL'
-            ? AcademicYear::find($academicYearId)
-            : AcademicYear::where('is_active', true)->first();
+        // Resolve academic year
+        $academicYear = null;
+        if ($academicYearId && $academicYearId !== 'ALL') {
+            $academicYear = AcademicYear::find($academicYearId)
+                ?? AcademicYear::where('name', $academicYearId)->first();
+        } else {
+            $academicYear = AcademicYear::where('is_active', true)->first();
+        }
+
+        // Get DUDI info
+        $dudi = Dudi::find($id);
+        if (!$dudi) {
+            return response()->json(['message' => 'DUDI not found'], 404);
+        }
+
+        // Determine date range for calculation
+        // Use DUDI start/end date if available, otherwise fallback to Academic Year
+        $startDate = $dudi->start_date
+            ? Carbon::parse($dudi->start_date)
+            : ($academicYear ? Carbon::parse($academicYear->start_date ?? now()->startOfYear()) : now()->startOfMonth());
+
+        $endDate = $dudi->end_date
+            ? Carbon::parse($dudi->end_date)
+            : ($academicYear ? Carbon::parse($academicYear->end_date ?? now()) : now());
+
+        // Cap end date at today if the period extends into future
+        if ($endDate->isFuture()) {
+            $endDate = Carbon::today();
+        }
+
+        // If start date is in future, no alpha calculation possible yet
+        if ($startDate->isFuture()) {
+            $workingDays = [];
+        } else {
+            // Pre-calculate working days (excluding weekends and holidays)
+            $workingDays = [];
+            $currentDate = $startDate->copy();
+
+            // Get all holidays in range
+            $holidays = Holiday::whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+                ->pluck('date')
+                ->map(fn($d) => $d->format('Y-m-d'))
+                ->toArray();
+
+            while ($currentDate->lte($endDate)) {
+                $dateStr = $currentDate->format('Y-m-d');
+                $isWeekend = $currentDate->isWeekend();
+                $isHoliday = in_array($dateStr, $holidays);
+
+                if (!$isWeekend && !$isHoliday) {
+                    $workingDays[] = $dateStr;
+                }
+                $currentDate->addDay();
+            }
+        }
 
         $placements = Placement::with(['student.user'])
             ->where('dudi_id', $id)
             ->where('status', 'ACTIVE')
-            ->when($activeYear, function ($q) use ($activeYear) {
-                $q->where('academic_year_id', $activeYear->id);
+            ->when($academicYear, function ($q) use ($academicYear) {
+                $q->where('academic_year_id', $academicYear->id);
+                $q->whereHas('student', function ($sq) use ($academicYear) {
+                    $sq->where('academic_year', $academicYear->name);
+                });
             })
             ->get();
 
-        $students = $placements->map(function ($p) use ($activeYear) {
-            $attendances = Attendance::where('placement_id', $p->id)->get();
+        $students = $placements->map(function ($p) use ($workingDays) {
+            // Get all attendance dates for this student
+            $attendanceDates = Attendance::where('placement_id', $p->id)
+                ->whereIn('status', ['ON_TIME', 'LATE', 'SICK', 'PERMIT']) // Only count valid attributes
+                ->pluck('date')
+                ->map(fn($d) => $d->format('Y-m-d'))
+                ->toArray();
 
+            // Calculate alpha dates: Working days where student has NO attendance
+            $alphaDates = array_diff($workingDays, $attendanceDates);
+            $alphaCount = count($alphaDates);
+
+            // Re-fetch aggregate stats for display
+            $attendances = Attendance::where('placement_id', $p->id)->get();
             $onTime = $attendances->where('status', 'ON_TIME')->count();
             $late = $attendances->where('status', 'LATE')->count();
             $sick = $attendances->where('status', 'SICK')->count();
             $permit = $attendances->where('status', 'PERMIT')->count();
 
-            $totalWorkingDays = $this->countWorkingDays($activeYear);
-            $totalAttendanceDays = $onTime + $late + $sick + $permit;
-            $alpha = max(0, $totalWorkingDays - $totalAttendanceDays);
-
             return [
                 'studentId' => $p->student_id,
                 'studentName' => $p->student->user->name ?? '',
                 'studentNis' => $p->student->nis ?? '',
-                'studentClassName' => $p->student->class_name ?? '',
+                'nis' => $p->student->nis ?? '', // Added for modal
+                'className' => $p->student->class_name ?? '', // Fixed: studentClassName -> className
                 'studentPhone' => $p->student->user->phone ?? '',
+                'phone' => $p->student->user->phone ?? '', // Added for modal
                 'studentEmail' => $p->student->user->email ?? '',
+                'email' => $p->student->user->email ?? '', // Added for modal
+                'avatarUrl' => $p->student->user->avatar_url ?? null, // Added avatarUrl
                 'onTime' => $onTime,
                 'late' => $late,
                 'sick' => $sick,
                 'permit' => $permit,
-                'alpha' => $alpha,
+                'alphaCount' => $alphaCount, // Fixed: alpha -> alphaCount
+                'alphaDates' => array_values($alphaDates), // Added alphaDates
             ];
         });
 
-        return response()->json($students);
+        // Structure expected by frontend: { dudi: ..., students: [...] }
+        return response()->json([
+            'dudi' => [
+                'id' => $dudi->id,
+                'name' => $dudi->name,
+                'startDate' => $dudi->start_date ? $dudi->start_date->format('Y-m-d') : null,
+                'endDate' => $dudi->end_date ? $dudi->end_date->format('Y-m-d') : null,
+            ],
+            'students' => $students
+        ]);
     }
 
     public function teacher(Request $request)
     {
         $user = $request->user();
 
+        // Resolve active year
+        $activeYear = \App\Models\AcademicYear::where('is_active', true)->first();
+
         $placements = Placement::with(['student.user', 'dudi'])
             ->where('teacher_id', $user->id)
             ->where('status', 'ACTIVE')
+            ->when($activeYear, function ($q) use ($activeYear) {
+                $q->where('academic_year_id', $activeYear->id);
+                $q->whereHas('student', function ($sq) use ($activeYear) {
+                    $sq->where('academic_year', $activeYear->name);
+                    $sq->whereNull('deleted_at');
+                });
+            })
             ->get();
+        $placementIds = $placements->pluck('id');
 
-        $studentCount = $placements->count();
+        $totalStudents = $placements->unique('student_id')->count();
         $dudiIds = $placements->pluck('dudi_id')->unique();
         $dudiCount = $dudiIds->count();
-
-        // Today's attendance for my students
-        $today = Carbon::today()->format('Y-m-d');
-        $placementIds = $placements->pluck('id');
-        $todayAttendance = Attendance::whereIn('placement_id', $placementIds)
-            ->whereDate('date', $today)
-            ->count();
 
         // Pending journals
         $pendingJournals = Journal::whereIn('placement_id', $placementIds)
             ->where('status', 'PENDING')
             ->count();
 
-        // Open issues
-        $openIssues = Issue::whereIn('placement_id', $placementIds)
+        // Calculate Average Attendance
+        // Logic: (OnTime + Late) / Total Recorded * 100
+        $allAttendance = Attendance::whereIn('placement_id', $placementIds)->get();
+        $presentCount = $allAttendance->whereIn('status', ['ON_TIME', 'LATE'])->count();
+        $totalRecorded = $allAttendance->count();
+        $avgAttendance = $totalRecorded > 0 ? round(($presentCount / $totalRecorded) * 100, 1) : 0;
+
+        // Open issues count
+        $openIssuesCount = Issue::whereIn('placement_id', $placementIds)
             ->where('status', 'OPEN')
             ->count();
 
-        // My visits this month
-        $myVisits = Visit::where('teacher_id', $user->id)
-            ->whereMonth('visit_date', now()->month)
-            ->count();
+        // Problematic Students (Students with Open Issues)
+        $problematicStudents = Issue::with(['placement.student.user'])
+            ->whereIn('placement_id', $placementIds)
+            ->where('status', 'OPEN')
+            ->orderBy('created_at', 'desc')
+            ->take(5)
+            ->get()
+            ->map(function ($issue) {
+                return [
+                    'id' => $issue->placement->student_id,
+                    'name' => $issue->placement->student->user->name ?? 'Unknown',
+                    'class' => $issue->placement->student->class_name ?? '',
+                    'status' => $issue->severity, // Use severity as status badge
+                    'issue' => $issue->description,
+                ];
+            });
+
+        // Recent Journals
+        $recentJournals = Journal::with(['placement.student.user'])
+            ->whereIn('placement_id', $placementIds)
+            ->orderBy('created_at', 'desc')
+            ->take(5)
+            ->get()
+            ->map(function ($j) {
+                return [
+                    'id' => $j->id,
+                    'title' => 'Jurnal Harian', // Or truncate description
+                    'name' => $j->placement->student->user->name ?? 'Unknown',
+                    'date' => $j->date->format('d M'),
+                    'status' => $j->status === 'PENDING' ? 'Pending Review' : 'Approved',
+                ];
+            });
 
         return response()->json([
-            'stats' => [
-                'studentCount' => $studentCount,
-                'dudiCount' => $dudiCount,
-                'todayAttendance' => $todayAttendance,
-                'pendingJournals' => $pendingJournals,
-                'openIssues' => $openIssues,
-                'myVisits' => $myVisits,
-            ],
-            'students' => $placements->map(function ($p) {
-                return [
-                    'id' => $p->student_id,
-                    'name' => $p->student->user->name ?? '',
-                    'nis' => $p->student->nis ?? '',
-                    'className' => $p->student->class_name ?? '',
-                    'dudiName' => $p->dudi->name ?? '',
-                ];
-            }),
+            'totalStudents' => $totalStudents,
+            'pendingJournals' => $pendingJournals,
+            'avgAttendance' => $avgAttendance,
+            'problematicCount' => $openIssuesCount, // For the card
+            'problematicStudents' => $problematicStudents,
+            'recentJournals' => $recentJournals,
+            // Extra stats if needed
+            'dudiCount' => $dudiCount,
         ]);
     }
 
@@ -354,8 +593,14 @@ class DashboardController extends Controller
             $placements = Placement::where('dudi_id', $dudi->id)
                 ->where('teacher_id', $user->id)
                 ->where('status', 'ACTIVE')
+                ->whereHas('student', function ($sq) {
+                    $sq->whereNull('deleted_at');
+                })
                 ->when($activeYear, function ($q) use ($activeYear) {
                     $q->where('academic_year_id', $activeYear->id);
+                    $q->whereHas('student', function ($sq) use ($activeYear) {
+                        $sq->where('academic_year', $activeYear->name);
+                    });
                 })
                 ->pluck('id');
 
@@ -367,19 +612,51 @@ class DashboardController extends Controller
             $sick = $attendances->where('status', 'SICK')->count();
             $permit = $attendances->where('status', 'PERMIT')->count();
 
-            $totalWorkingDays = $this->countWorkingDays($activeYear);
+            // Calculate Working Days
+            $startDate = $dudi->start_date
+                ? Carbon::parse($dudi->start_date)
+                : ($activeYear ? Carbon::parse($activeYear->start_date ?? now()->startOfYear()) : now()->startOfMonth());
+
+            $endDate = $dudi->end_date
+                ? Carbon::parse($dudi->end_date)
+                : ($activeYear ? Carbon::parse($activeYear->end_date ?? now()) : now());
+
+            if ($endDate->isFuture()) {
+                $endDate = Carbon::today();
+            }
+
+            $totalWorkingDays = 0;
+            if (!$startDate->isFuture()) {
+                // Get holidays
+                $holidays = Holiday::whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+                    ->pluck('date')
+                    ->map(fn($d) => $d->format('Y-m-d'))
+                    ->toArray();
+
+                $currentDate = $startDate->copy();
+                while ($currentDate->lte($endDate)) {
+                    $dateStr = $currentDate->format('Y-m-d');
+                    if (!$currentDate->isWeekend() && !in_array($dateStr, $holidays)) {
+                        $totalWorkingDays++;
+                    }
+                    $currentDate->addDay();
+                }
+            }
+
             $totalAttendanceDays = $onTime + $late + $sick + $permit;
             $alpha = max(0, ($totalWorkingDays * $studentCount) - $totalAttendanceDays);
 
             return [
                 'dudiId' => $dudi->id,
                 'dudiName' => $dudi->name,
-                'studentCount' => $studentCount,
-                'onTime' => $onTime,
-                'late' => $late,
-                'sick' => $sick,
-                'permit' => $permit,
-                'alpha' => $alpha,
+                'totalStudents' => $studentCount, // Renamed from studentCount
+                'stats' => [
+                    'present' => $onTime, // Renamed from onTime
+                    'late' => $late,
+                    'sick' => $sick,
+                    'permit' => $permit,
+                    'alpha' => $alpha,
+                ]
             ];
         });
 
@@ -391,37 +668,126 @@ class DashboardController extends Controller
         $user = $request->user();
         $academicYearId = $request->academicYearId;
 
-        $placementIds = Placement::where('teacher_id', $user->id)
-            ->where('status', 'ACTIVE')
-            ->pluck('id');
+        $activeYear = \App\Models\AcademicYear::where('is_active', true)->first();
 
-        // Attendance trend (last 7 days)
+        $placements = Placement::where('teacher_id', $user->id)
+            ->where('status', 'ACTIVE')
+            ->when($activeYear, function ($q) use ($activeYear) {
+                $q->where('academic_year_id', $activeYear->id);
+                $q->whereHas('student', function ($sq) use ($activeYear) {
+                    $sq->where('academic_year', $activeYear->name);
+                    $sq->whereNull('deleted_at');
+                });
+            })
+            ->get();
+        $placementIds = $placements->pluck('id');
+
+        // Attendance trend (last 7 days) with presentCount, lateCount, absentCount
         $attendanceTrend = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
-            $count = Attendance::whereIn('placement_id', $placementIds)
+            $dayAttendances = Attendance::whereIn('placement_id', $placementIds)
                 ->whereDate('date', $date)
-                ->count();
+                ->get();
             $attendanceTrend[] = [
                 'date' => $date->format('Y-m-d'),
-                'day' => $date->format('D'),
-                'count' => $count,
+                'activeCount' => $dayAttendances->count(),
+                'presentCount' => $dayAttendances->where('status', 'ON_TIME')->count(),
+                'lateCount' => $dayAttendances->where('status', 'LATE')->count(),
+                'absentCount' => $dayAttendances->whereIn('status', ['ABSENT', 'PERMIT', 'SICK'])->count(),
             ];
         }
 
+        // Journal trend (last 7 days)
+        $journalTrend = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $date = Carbon::today()->subDays($i);
+            $dayJournals = Journal::whereIn('placement_id', $placementIds)
+                ->whereDate('date', $date)
+                ->get();
+            $journalTrend[] = [
+                'date' => $date->format('Y-m-d'),
+                'submittedCount' => $dayJournals->count(),
+                'approvedCount' => $dayJournals->where('status', 'APPROVED')->count(),
+            ];
+        }
+
+        // Visit stats
+        $totalVisits = Visit::where('teacher_id', $user->id)->count();
+        $thisMonthVisits = Visit::where('teacher_id', $user->id)
+            ->whereMonth('visit_date', now()->month)
+            ->whereYear('visit_date', now()->year)
+            ->count();
+
+        // Placement stats
+        $activePlacements = $placements->where('status', 'ACTIVE')->count();
+        $finishedPlacements = Placement::where('teacher_id', $user->id)
+            ->where('status', 'FINISHED')
+            ->count();
+        $totalPlacements = Placement::where('teacher_id', $user->id)->count();
+
         return response()->json([
             'attendanceTrend' => $attendanceTrend,
+            'journalTrend' => $journalTrend,
+            'visitStats' => [
+                'totalVisits' => $totalVisits,
+                'thisMonthVisits' => $thisMonthVisits,
+            ],
+            'placementStats' => [
+                'active' => $activePlacements,
+                'finished' => $finishedPlacements,
+                'total' => $totalPlacements,
+            ],
         ]);
     }
 
     public function teacherDudiDetails(Request $request, $dudiId)
     {
         $user = $request->user();
-        $academicYearId = $request->academicYearId;
+        $academicYearId = $request->academicYearId ?? $request->academicYear;
 
         $activeYear = $academicYearId && $academicYearId !== 'ALL'
             ? AcademicYear::find($academicYearId)
             : AcademicYear::where('is_active', true)->first();
+
+        // Get DUDI info for date range
+        $dudi = Dudi::find($dudiId);
+
+        // Determine date range for calculation
+        $startDate = $dudi && $dudi->start_date
+            ? Carbon::parse($dudi->start_date)
+            : ($activeYear ? Carbon::parse($activeYear->start_date ?? now()->startOfYear()) : now()->startOfMonth());
+
+        $endDate = $dudi && $dudi->end_date
+            ? Carbon::parse($dudi->end_date)
+            : ($activeYear ? Carbon::parse($activeYear->end_date ?? now()) : now());
+
+        if ($endDate->isFuture()) {
+            $endDate = Carbon::today();
+        }
+
+        if ($startDate->isFuture()) {
+            $workingDays = [];
+        } else {
+            $workingDays = [];
+            $currentDate = $startDate->copy();
+
+            $holidays = Holiday::whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+                ->pluck('date')
+                ->map(fn($d) => $d->format('Y-m-d'))
+                ->toArray();
+
+            while ($currentDate->lte($endDate)) {
+                $dateStr = $currentDate->format('Y-m-d');
+                $isWeekend = $currentDate->isWeekend();
+                $isHoliday = in_array($dateStr, $holidays);
+
+                if (!$isWeekend && !$isHoliday) {
+                    $workingDays[] = $dateStr;
+                }
+                $currentDate->addDay();
+            }
+        }
 
         $placements = Placement::with(['student.user'])
             ->where('dudi_id', $dudiId)
@@ -432,41 +798,60 @@ class DashboardController extends Controller
             })
             ->get();
 
-        $students = $placements->map(function ($p) use ($activeYear) {
-            $attendances = Attendance::where('placement_id', $p->id)->get();
+        $students = $placements->map(function ($p) use ($workingDays) {
+            // Get attendance dates
+            $attendanceDates = Attendance::where('placement_id', $p->id)
+                ->whereIn('status', ['ON_TIME', 'LATE', 'SICK', 'PERMIT'])
+                ->pluck('date')
+                ->map(fn($d) => $d->format('Y-m-d'))
+                ->toArray();
 
+            // Calculate alpha
+            $alphaDates = array_diff($workingDays, $attendanceDates);
+            $alphaCount = count($alphaDates);
+
+            $attendances = Attendance::where('placement_id', $p->id)->get();
             $onTime = $attendances->where('status', 'ON_TIME')->count();
             $late = $attendances->where('status', 'LATE')->count();
             $sick = $attendances->where('status', 'SICK')->count();
             $permit = $attendances->where('status', 'PERMIT')->count();
 
-            $totalWorkingDays = $this->countWorkingDays($activeYear);
-            $totalAttendanceDays = $onTime + $late + $sick + $permit;
-            $alpha = max(0, $totalWorkingDays - $totalAttendanceDays);
-
             return [
                 'studentId' => $p->student_id,
                 'studentName' => $p->student->user->name ?? '',
                 'studentNis' => $p->student->nis ?? '',
-                'studentClassName' => $p->student->class_name ?? '',
+                'nis' => $p->student->nis ?? '', // Added for modal
+                'className' => $p->student->class_name ?? '',
                 'studentPhone' => $p->student->user->phone ?? '',
+                'phone' => $p->student->user->phone ?? '', // Added for modal
                 'studentEmail' => $p->student->user->email ?? '',
+                'email' => $p->student->user->email ?? '', // Added for modal
+                'avatarUrl' => $p->student->user->avatar_url ?? null,
                 'onTime' => $onTime,
                 'late' => $late,
                 'sick' => $sick,
                 'permit' => $permit,
-                'alpha' => $alpha,
+                'alphaCount' => $alphaCount,
+                'alphaDates' => array_values($alphaDates),
             ];
         });
 
-        return response()->json($students);
+        return response()->json([
+            'dudi' => [
+                'id' => $dudi->id ?? $dudiId,
+                'name' => $dudi->name ?? '',
+                'startDate' => $dudi && $dudi->start_date ? $dudi->start_date->format('Y-m-d') : null,
+                'endDate' => $dudi && $dudi->end_date ? $dudi->end_date->format('Y-m-d') : null,
+            ],
+            'students' => $students
+        ]);
     }
 
     public function student(Request $request)
     {
         $user = $request->user();
 
-        $placement = Placement::with(['dudi', 'teacher.user'])
+        $placement = Placement::with(['dudi', 'teacher.user', 'academicYear'])
             ->where('student_id', $user->id)
             ->where('status', 'ACTIVE')
             ->latest('created_at')
@@ -474,93 +859,107 @@ class DashboardController extends Controller
 
         if (!$placement) {
             return response()->json([
-                'hasPlacement' => false,
-                'stats' => null,
+                'attendance' => ['totalPresent' => 0, 'totalPermit' => 0, 'totalAbsent' => 0],
+                'journal' => ['total' => 0],
+                'badges' => [],
+                'schoolInfo' => ['name' => 'SMK Negeri 1 Jakarta', 'academicYear' => ''],
+                'teacherInfo' => null
             ]);
         }
 
         // Attendance stats
         $attendances = Attendance::where('placement_id', $placement->id)->get();
-        $onTime = $attendances->where('status', 'ON_TIME')->count();
-        $late = $attendances->where('status', 'LATE')->count();
-        $totalAttended = $onTime + $late;
+        $totalPresent = $attendances->whereIn('status', ['ON_TIME', 'LATE'])->count();
+        $totalPermit = $attendances->whereIn('status', ['PERMIT', 'SICK'])->count();
+        $totalAbsent = $attendances->where('status', 'ABSENT')->count();
 
         // Journal stats
-        $journals = Journal::where('placement_id', $placement->id)->get();
-        $approvedJournals = $journals->where('status', 'APPROVED')->count();
-        $pendingJournals = $journals->where('status', 'PENDING')->count();
+        $journalTotal = Journal::where('placement_id', $placement->id)->count();
 
         return response()->json([
-            'hasPlacement' => true,
-            'placement' => [
-                'id' => $placement->id,
-                'dudiName' => $placement->dudi->name ?? '',
-                'dudiAddress' => $placement->dudi->address ?? '',
-                'teacherName' => $placement->teacher->user->name ?? '',
+            'attendance' => [
+                'totalPresent' => $totalPresent,
+                'totalPermit' => $totalPermit,
+                'totalAbsent' => $totalAbsent,
             ],
-            'stats' => [
-                'totalAttended' => $totalAttended,
-                'onTime' => $onTime,
-                'late' => $late,
-                'approvedJournals' => $approvedJournals,
-                'pendingJournals' => $pendingJournals,
-                'totalJournals' => $journals->count(),
+            'journal' => [
+                'total' => $journalTotal,
             ],
+            'badges' => [],
+            'schoolInfo' => [
+                'name' => 'SMK Negeri 1 Jakarta', // Optional: could be fetched from settings
+                'academicYear' => $placement->academicYear->name ?? '',
+            ],
+            'teacherInfo' => $placement->teacher ? [
+                'name' => $placement->teacher->user->name ?? '',
+                'school' => 'SMK Negeri 1 Jakarta',
+                'phone' => $placement->teacher->user->phone ?? '',
+            ] : null,
         ]);
     }
 
     public function mentor(Request $request)
     {
         $user = $request->user();
-
         $mentor = Mentor::with('dudi')->where('user_id', $user->id)->first();
 
         if (!$mentor || !$mentor->dudi_id) {
             return response()->json([
-                'hasDudi' => false,
-                'stats' => null,
+                'dudiName' => 'Belum Terhubung',
+                'totalStudents' => 0,
+                'attendanceToday' => ['present' => 0, 'late' => 0, 'absent' => 0],
+                'pendingJournals' => 0,
+                'students' => [],
+                'teachers' => [],
             ]);
         }
 
-        $placements = Placement::with(['student.user'])
+        // Active placements at this DUDI
+        $placements = Placement::with(['student.user', 'teacher.user'])
             ->where('dudi_id', $mentor->dudi_id)
             ->where('status', 'ACTIVE')
             ->get();
 
-        $studentCount = $placements->count();
         $placementIds = $placements->pluck('id');
 
-        // Today's attendance
+        // Detailed Attendance Today
         $today = Carbon::today()->format('Y-m-d');
-        $todayAttendance = Attendance::whereIn('placement_id', $placementIds)
+        $todayAttendances = Attendance::whereIn('placement_id', $placementIds)
             ->whereDate('date', $today)
-            ->count();
+            ->get();
 
-        // Pending journals
+        $attendanceStats = [
+            'present' => $todayAttendances->where('status', 'ON_TIME')->count(),
+            'late' => $todayAttendances->where('status', 'LATE')->count(),
+            'absent' => $todayAttendances->where('status', 'ABSENT')->count(),
+        ];
+
+        // Pending Journals
         $pendingJournals = Journal::whereIn('placement_id', $placementIds)
             ->where('status', 'PENDING')
             ->count();
 
+        // Unique Teachers
+        $teachers = $placements->map(function ($p) {
+            return $p->teacher ? [
+                'name' => $p->teacher->user->name ?? '',
+                'school' => 'SMK Negeri ...', // Hardcoded or from settings
+                'phone' => $p->teacher->user->phone ?? '',
+            ] : null;
+        })->filter()->unique('name')->values();
+
         return response()->json([
-            'hasDudi' => true,
-            'dudi' => [
-                'id' => $mentor->dudi->id,
-                'name' => $mentor->dudi->name,
-                'address' => $mentor->dudi->address,
-            ],
-            'stats' => [
-                'studentCount' => $studentCount,
-                'todayAttendance' => $todayAttendance,
-                'pendingJournals' => $pendingJournals,
-            ],
+            'dudiName' => $mentor->dudi->name ?? '',
+            'totalStudents' => $placements->count(),
+            'attendanceToday' => $attendanceStats,
+            'pendingJournals' => $pendingJournals,
             'students' => $placements->map(function ($p) {
                 return [
                     'id' => $p->student_id,
                     'name' => $p->student->user->name ?? '',
-                    'nis' => $p->student->nis ?? '',
-                    'className' => $p->student->class_name ?? '',
                 ];
             }),
+            'teachers' => $teachers,
         ]);
     }
 }

@@ -14,7 +14,10 @@ class ReportController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $query = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user']);
+        $query = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user'])
+            ->whereHas('placement.student', function ($q) {
+                $q->whereNull('deleted_at');
+            });
 
         // Role-based filtering
         if ($user->role === User::ROLE_STUDENT) {
@@ -38,6 +41,45 @@ class ReportController extends Controller
         return response()->json($reports);
     }
 
+    public function upload(Request $request)
+    {
+        $request->validate([
+            'file' => 'required|mimes:pdf|max:10240', // 10MB PDF
+        ]);
+
+        $user = $request->user();
+        $placement = Placement::where('student_id', $user->id)
+            ->where('status', 'ACTIVE')
+            ->latest('created_at')
+            ->first();
+
+        if (!$placement) {
+            return response()->json(['message' => 'Tidak ada penempatan aktif'], 400);
+        }
+
+        // Handle File Upload
+        $file = $request->file('file');
+        $fileName = 'report_' . $placement->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $path = $file->storeAs('reports', $fileName, 'public');
+        $fileUrl = asset('storage/' . $path);
+
+        // Create or Update Report
+        $report = FinalReport::where('placement_id', $placement->id)->first();
+        if (!$report) {
+            $report = new FinalReport();
+            $report->id = Str::uuid();
+            $report->placement_id = $placement->id;
+            $report->title = 'Laporan Akhir PKL';
+            $report->created_at = now();
+        }
+
+        $report->file_url = $fileUrl;
+        $report->status = FinalReport::STATUS_SUBMITTED;
+        $report->save();
+
+        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')));
+    }
+
     private function transformReport($r)
     {
         return [
@@ -46,6 +88,7 @@ class ReportController extends Controller
             'studentName' => $r->placement->student->user->name ?? '',
             'studentNis' => $r->placement->student->nis ?? '',
             'dudiName' => $r->placement->dudi->name ?? '',
+            'dudiLogo' => $r->placement->dudi->logo ? (str_starts_with($r->placement->dudi->logo, 'http') ? $r->placement->dudi->logo : asset('storage/uploads/logos/' . $r->placement->dudi->logo)) : null,
             'teacherName' => $r->placement->teacher->user->name ?? '',
             'fileUrl' => $r->file_url,
             'title' => $r->title,
@@ -53,6 +96,7 @@ class ReportController extends Controller
             'teacherNotes' => $r->teacher_notes,
             'finalGrade' => $r->final_grade,
             'createdAt' => $r->created_at,
+            'assessments' => $r->placement->assessments ?? [],
         ];
     }
 
@@ -94,6 +138,21 @@ class ReportController extends Controller
         $report->save();
 
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')), 201);
+    }
+
+    public function destroy($id)
+    {
+        $report = FinalReport::findOrFail($id);
+
+        // Delete file if exists
+        if ($report->file_url) {
+            $path = str_replace(asset('storage/'), '', $report->file_url);
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($path);
+        }
+
+        $report->delete();
+
+        return response()->json(['message' => 'Laporan berhasil dihapus']);
     }
 
     public function show($id)
@@ -139,18 +198,36 @@ class ReportController extends Controller
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')));
     }
 
+    public function me(Request $request)
+    {
+        $user = $request->user();
+        $report = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments'])
+            ->whereHas('placement', function ($q) use ($user) {
+                $q->where('student_id', $user->id);
+            })
+            ->latest('created_at')
+            ->first();
+
+        if (!$report) {
+            return response()->json(null);
+        }
+
+        return response()->json($this->transformReport($report));
+    }
+
     public function studentReports(Request $request, $id)
     {
-        $reports = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user'])
+        $report = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments'])
             ->whereHas('placement', function ($q) use ($id) {
                 $q->where('student_id', $id);
             })
-            ->orderBy('created_at', 'desc')
-            ->get()
-            ->map(function ($r) {
-                return $this->transformReport($r);
-            });
+            ->latest('created_at')
+            ->first();
 
-        return response()->json($reports);
+        if (!$report) {
+            return response()->json(null);
+        }
+
+        return response()->json($this->transformReport($report));
     }
 }
