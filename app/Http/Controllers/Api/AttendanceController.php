@@ -41,6 +41,13 @@ class AttendanceController extends Controller
             }
         }
 
+        // Student Scope
+        if ($user->role === User::ROLE_STUDENT) {
+            $query->whereHas('placement', function ($q) use ($user) {
+                $q->where('student_id', $user->id);
+            });
+        }
+
         if ($request->date) {
             $query->whereDate('date', $request->date);
         }
