@@ -14,7 +14,7 @@ class ReportController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $query = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user'])
+        $query = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments'])
             ->whereHas('placement.student', function ($q) {
                 $q->whereNull('deleted_at');
             });
@@ -77,7 +77,7 @@ class ReportController extends Controller
         $report->status = FinalReport::STATUS_SUBMITTED;
         $report->save();
 
-        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')));
+        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
     }
 
     private function transformReport($r)
@@ -96,7 +96,18 @@ class ReportController extends Controller
             'teacherNotes' => $r->teacher_notes,
             'finalGrade' => $r->final_grade,
             'createdAt' => $r->created_at,
-            'assessments' => $r->placement->assessments ?? [],
+            'assessments' => isset($r->placement->assessments) ? $r->placement->assessments->map(function ($a) {
+                return [
+                    'id' => $a->id,
+                    'monthPeriod' => $a->month_period,
+                    'technicalScore' => $a->technical_score,
+                    'disciplineScore' => $a->discipline_score,
+                    'socialScore' => $a->social_score,
+                    'managerialScore' => $a->managerial_score,
+                    'finalScore' => $a->final_score,
+                    'notes' => $a->notes,
+                ];
+            }) : [],
         ];
     }
 
@@ -125,7 +136,7 @@ class ReportController extends Controller
             $existing->status = FinalReport::STATUS_SUBMITTED;
             $existing->save();
 
-            return response()->json($this->transformReport($existing->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')));
+            return response()->json($this->transformReport($existing->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
         }
 
         $report = new FinalReport();
@@ -137,7 +148,7 @@ class ReportController extends Controller
         $report->created_at = now();
         $report->save();
 
-        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')), 201);
+        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')), 201);
     }
 
     public function destroy($id)
@@ -157,7 +168,7 @@ class ReportController extends Controller
 
     public function show($id)
     {
-        $report = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user'])
+        $report = FinalReport::with(['placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments'])
             ->findOrFail($id);
 
         return response()->json($this->transformReport($report));
@@ -176,7 +187,7 @@ class ReportController extends Controller
 
         $report->save();
 
-        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')));
+        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
     }
 
     public function review(Request $request, $id)
@@ -195,7 +206,7 @@ class ReportController extends Controller
 
         $report->save();
 
-        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user')));
+        return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
     }
 
     public function me(Request $request)
