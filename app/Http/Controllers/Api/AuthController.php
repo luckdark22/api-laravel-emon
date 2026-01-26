@@ -60,6 +60,10 @@ class AuthController extends Controller
 
     public function changePassword(Request $request)
     {
+        if ($request->has('password') && !$request->has('newPassword')) {
+            $request->merge(['newPassword' => $request->input('password')]);
+        }
+
         $request->validate([
             'newPassword' => 'required|min:6',
         ]);
