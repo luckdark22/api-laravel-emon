@@ -18,6 +18,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use App\Models\Setting;
 
 class DashboardController extends Controller
 {
@@ -84,6 +85,29 @@ class DashboardController extends Controller
 
         // Attendance trend (last 7 days)
         $attendanceTrend = [];
+
+        // Determine global PKL dates from Settings
+        // Try camelCase first (as per screenshot), fallback to snake_case just in case
+        $globalStartDateStr = Setting::getValue('pklStartDate') ?? Setting::getValue('pkl_start_date');
+        $globalEndDateStr = Setting::getValue('pklEndDate') ?? Setting::getValue('pkl_end_date');
+
+        $globalStartDate = $globalStartDateStr ? Carbon::parse($globalStartDateStr) : null;
+        $globalEndDate = $globalEndDateStr ? Carbon::parse($globalEndDateStr) : null;
+
+        // If specific DUDI selected, override with DUDI dates if available
+        $effStartDate = $globalStartDate;
+        $effEndDate = $globalEndDate;
+
+        if ($dudiId && $dudiId !== 'ALL') {
+            $dudiObj = Dudi::find($dudiId);
+            if ($dudiObj) {
+                if ($dudiObj->start_date)
+                    $effStartDate = $dudiObj->start_date;
+                if ($dudiObj->end_date)
+                    $effEndDate = $dudiObj->end_date;
+            }
+        }
+
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
 
@@ -112,24 +136,33 @@ class DashboardController extends Controller
             $isHoliday = Holiday::whereDate('date', $date)->exists();
 
             if (!$isWeekend && !$isHoliday) {
-                // Get expected active students count - exclude soft-deleted
-                $eligiblePlacementsQuery = Placement::where('status', 'ACTIVE')
-                    ->whereHas('student', function ($q) {
-                        $q->whereNull('deleted_at');
-                    });
+                // Check if date is within valid PKL period
+                $isValidPeriod = true;
+                if ($effStartDate && $date->lt($effStartDate))
+                    $isValidPeriod = false;
+                if ($effEndDate && $date->gt($effEndDate))
+                    $isValidPeriod = false;
 
-                if ($academicYearId) {
-                    $eligiblePlacementsQuery->where('academic_year_id', $academicYearId);
-                }
-                if ($dudiId && $dudiId !== 'ALL') {
-                    $eligiblePlacementsQuery->where('dudi_id', $dudiId);
-                }
+                if ($isValidPeriod) {
+                    // Get expected active students count - exclude soft-deleted
+                    $eligiblePlacementsQuery = Placement::where('status', 'ACTIVE')
+                        ->whereHas('student', function ($q) {
+                            $q->whereNull('deleted_at');
+                        });
 
-                $expectedAttendance = $eligiblePlacementsQuery->distinct('student_id')->count('student_id');
-                $actualAttendance = $hadir + $izin;
+                    if ($academicYearId) {
+                        $eligiblePlacementsQuery->where('academic_year_id', $academicYearId);
+                    }
+                    if ($dudiId && $dudiId !== 'ALL') {
+                        $eligiblePlacementsQuery->where('dudi_id', $dudiId);
+                    }
 
-                // Any active student without attendance record is Alpha
-                $alpa = max(0, $expectedAttendance - $actualAttendance);
+                    $expectedAttendance = $eligiblePlacementsQuery->distinct('student_id')->count('student_id');
+                    $actualAttendance = $hadir + $izin;
+
+                    // Any active student without attendance record is Alpha
+                    $alpa = max(0, $expectedAttendance - $actualAttendance);
+                } // End isValidPeriod
             }
 
             $attendanceTrend[] = [
@@ -862,10 +895,12 @@ class DashboardController extends Controller
                 'attendance' => ['totalPresent' => 0, 'totalPermit' => 0, 'totalAbsent' => 0],
                 'journal' => ['total' => 0],
                 'badges' => [],
-                'schoolInfo' => ['name' => 'SMK Negeri 1 Jakarta', 'academicYear' => ''],
+                'schoolInfo' => ['name' => Setting::getValue('institutionName', ''), 'academicYear' => ''],
                 'teacherInfo' => null
             ]);
         }
+
+        $schoolName = Setting::getValue('institutionName', '');
 
         // Attendance stats
         $attendances = Attendance::where('placement_id', $placement->id)->get();
@@ -887,12 +922,12 @@ class DashboardController extends Controller
             ],
             'badges' => [],
             'schoolInfo' => [
-                'name' => 'SMK Negeri 1 Jakarta', // Optional: could be fetched from settings
+                'name' => $schoolName, // Dynamic from settings
                 'academicYear' => $placement->academicYear->name ?? '',
             ],
             'teacherInfo' => $placement->teacher ? [
                 'name' => $placement->teacher->user->name ?? '',
-                'school' => 'SMK Negeri 1 Jakarta',
+                'school' => $schoolName,
                 'phone' => $placement->teacher->user->phone ?? '',
             ] : null,
         ]);
@@ -943,7 +978,7 @@ class DashboardController extends Controller
         $teachers = $placements->map(function ($p) {
             return $p->teacher ? [
                 'name' => $p->teacher->user->name ?? '',
-                'school' => 'SMK Negeri ...', // Hardcoded or from settings
+                'school' => Setting::getValue('institutionName', ''),
                 'phone' => $p->teacher->user->phone ?? '',
             ] : null;
         })->filter()->unique('name')->values();

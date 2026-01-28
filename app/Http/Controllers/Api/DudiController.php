@@ -104,6 +104,7 @@ class DudiController extends Controller
                 $user->id = $userId;
                 $user->name = $request->mentorName;
                 $user->email = $request->mentorEmail;
+                $user->phone = $request->mentorPhone;
                 $user->password_hash = Hash::make($defaultPassword);
                 $user->role = User::ROLE_MENTOR;
                 $user->is_default_password = true;
@@ -236,12 +237,54 @@ class DudiController extends Controller
             $dudi->start_date = $request->startDate;
         if ($request->has('endDate'))
             $dudi->end_date = $request->endDate;
-        if ($request->has('workStartTime'))
-            $dudi->work_start_time = $request->workStartTime;
         if ($request->has('workEndTime'))
             $dudi->work_end_time = $request->workEndTime;
 
         $dudi->save();
+
+        // Handle Mentor Update
+        if ($request->mentorName || $request->mentorEmail) {
+            $mentor = Mentor::where('dudi_id', $dudi->id)->first();
+
+            if ($mentor) {
+                // Update existing mentor
+                $user = User::find($mentor->user_id);
+                if ($user) {
+                    if ($request->mentorName)
+                        $user->name = $request->mentorName;
+                    if ($request->mentorEmail)
+                        $user->email = $request->mentorEmail;
+                    if ($request->mentorPhone)
+                        $user->phone = $request->mentorPhone;
+                    $user->save();
+                }
+            } else {
+                // Create new mentor if not exists (similar to store)
+                // Need email to proceed
+                if ($request->mentorEmail) {
+                    // Check specific logic for existing user, same as store
+                    // ideally extract this to service, but here we duplicate for now 
+                    $userId = Str::uuid()->toString();
+                    $defaultPassword = '123456';
+
+                    $user = new User();
+                    $user->id = $userId;
+                    $user->name = $request->mentorName ?? 'Pembimbing';
+                    $user->email = $request->mentorEmail;
+                    $user->phone = $request->mentorPhone;
+                    $user->password_hash = Hash::make($defaultPassword);
+                    $user->role = User::ROLE_MENTOR;
+                    $user->is_default_password = true;
+                    $user->save();
+
+                    $mentor = new Mentor();
+                    $mentor->user_id = $userId;
+                    $mentor->dudi_id = $dudi->id;
+                    $mentor->position = $request->mentorPosition ?? 'Pembimbing';
+                    $mentor->save();
+                }
+            }
+        }
 
         // Return updated structure
         $dudi->load('mentors.user');

@@ -74,7 +74,7 @@ class StudentController extends Controller
 
         return DB::transaction(function () use ($request) {
             $userId = Str::uuid()->toString();
-            $defaultPassword = 'siswa123';
+            $defaultPassword = '123456';
 
             $user = new User();
             $user->id = $userId;
@@ -219,7 +219,7 @@ class StudentController extends Controller
 
             try {
                 DB::transaction(function () use ($data, &$results) {
-                    $defaultPassword = 'siswa123';
+                    $defaultPassword = '123456';
 
                     // Check if email exists (including soft deleted)
                     $existingUser = User::withTrashed()->where('email', $data['email'])->first();
