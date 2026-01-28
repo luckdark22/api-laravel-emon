@@ -346,8 +346,38 @@ class DashboardController extends Controller
             $permit = $attendances->where('status', 'PERMIT')->count();
 
             // Calculate alpha (absent days)
-            $totalWorkingDays = $this->countWorkingDays($activeYear);
+            // Use DUDI start/end date if available, otherwise Academic Year
+            $startDate = $dudi->start_date ? Carbon::parse($dudi->start_date)
+                : ($activeYear ? Carbon::parse($activeYear->start_date) : now()->startOfYear());
+            $endDate = $dudi->end_date ? Carbon::parse($dudi->end_date)
+                : ($activeYear ? Carbon::parse($activeYear->end_date ?? now()) : now());
+
+            // Clamp dates
+            if ($startDate->isFuture()) {
+                $totalWorkingDays = 0;
+            } else {
+                if ($endDate->isFuture())
+                    $endDate = Carbon::today();
+
+                // Fetch holidays in range
+                $holidays = Holiday::whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+                    ->pluck('date')
+                    ->map(fn($d) => $d->format('Y-m-d'))
+                    ->toArray();
+
+                $totalWorkingDays = 0;
+                $curr = $startDate->copy();
+                while ($curr->lte($endDate)) {
+                    if (!$curr->isWeekend() && !in_array($curr->format('Y-m-d'), $holidays)) {
+                        $totalWorkingDays++;
+                    }
+                    $curr->addDay();
+                }
+            }
+
             $totalAttendanceDays = $onTime + $late + $sick + $permit;
+            // logic: Expected Total Attendance = Working Days * Student Count
+            // Alpha = Expected - Actual
             $alpha = max(0, ($totalWorkingDays * $studentCount) - $totalAttendanceDays);
 
             return [
