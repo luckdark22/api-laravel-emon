@@ -40,7 +40,7 @@ class LeaveController extends Controller
                 $query->where('status', $request->status);
             }
 
-            $leaves = $query->orderBy('created_at', 'desc')->get()->map(function ($l) {
+            $leaves = $query->orderBy('start_date', 'desc')->get()->map(function ($l) {
                 return [
                     'id' => $l->id,
                     'placementId' => $l->placement_id,
@@ -54,7 +54,7 @@ class LeaveController extends Controller
                     'attachmentUrl' => $l->attachment_url,
                     'status' => $l->status,
                     'rejectionReason' => $l->rejection_reason,
-                    'createdAt' => $l->created_at,
+                    // 'createdAt' => $l->created_at, // Removed as column missing
                 ];
             });
 
