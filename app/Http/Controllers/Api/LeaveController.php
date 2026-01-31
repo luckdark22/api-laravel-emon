@@ -14,50 +14,55 @@ class LeaveController extends Controller
 {
     public function index(Request $request)
     {
-        $user = $request->user();
-        $query = Leave::with(['placement.student.user', 'placement.dudi']);
+        try {
+            $user = $request->user();
+            $query = Leave::with(['placement.student.user', 'placement.dudi']);
 
-        // Role-based filtering
-        if ($user->role === User::ROLE_STUDENT) {
-            $query->whereHas('placement', function ($q) use ($user) {
-                $q->where('student_id', $user->id);
-            });
-        } elseif ($user->role === User::ROLE_MENTOR) {
-            $mentor = Mentor::where('user_id', $user->id)->first();
-            if ($mentor && $mentor->dudi_id) {
-                $query->whereHas('placement', function ($q) use ($mentor) {
-                    $q->where('dudi_id', $mentor->dudi_id);
+            // Role-based filtering
+            if ($user->role === User::ROLE_STUDENT) {
+                $query->whereHas('placement', function ($q) use ($user) {
+                    $q->where('student_id', $user->id);
+                });
+            } elseif ($user->role === User::ROLE_MENTOR) {
+                $mentor = Mentor::where('user_id', $user->id)->first();
+                if ($mentor && $mentor->dudi_id) {
+                    $query->whereHas('placement', function ($q) use ($mentor) {
+                        $q->where('dudi_id', $mentor->dudi_id);
+                    });
+                }
+            } elseif ($user->role === User::ROLE_TEACHER) {
+                $query->whereHas('placement', function ($q) use ($user) {
+                    $q->where('teacher_id', $user->id);
                 });
             }
-        } elseif ($user->role === User::ROLE_TEACHER) {
-            $query->whereHas('placement', function ($q) use ($user) {
-                $q->where('teacher_id', $user->id);
+
+            if ($request->status && $request->status !== 'ALL') {
+                $query->where('status', $request->status);
+            }
+
+            $leaves = $query->orderBy('created_at', 'desc')->get()->map(function ($l) {
+                return [
+                    'id' => $l->id,
+                    'placementId' => $l->placement_id,
+                    'studentName' => $l->placement?->student?->user?->name ?? '',
+                    'studentNis' => $l->placement?->student?->nis ?? '',
+                    'dudiName' => $l->placement?->dudi?->name ?? '',
+                    'type' => $l->type,
+                    'startDate' => $l->start_date?->format('Y-m-d'),
+                    'endDate' => $l->end_date?->format('Y-m-d'),
+                    'reason' => $l->reason,
+                    'attachmentUrl' => $l->attachment_url,
+                    'status' => $l->status,
+                    'rejectionReason' => $l->rejection_reason,
+                    'createdAt' => $l->created_at,
+                ];
             });
+
+            return response()->json($leaves);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Leave Index Error: ' . $e->getMessage() . ' Trace: ' . $e->getTraceAsString());
+            return response()->json(['message' => 'Failed to fetch leaves: ' . $e->getMessage()], 500);
         }
-
-        if ($request->status && $request->status !== 'ALL') {
-            $query->where('status', $request->status);
-        }
-
-        $leaves = $query->orderBy('created_at', 'desc')->get()->map(function ($l) {
-            return [
-                'id' => $l->id,
-                'placementId' => $l->placement_id,
-                'studentName' => $l->placement->student->user->name ?? '',
-                'studentNis' => $l->placement->student->nis ?? '',
-                'dudiName' => $l->placement->dudi->name ?? '',
-                'type' => $l->type,
-                'startDate' => $l->start_date?->format('Y-m-d'),
-                'endDate' => $l->end_date?->format('Y-m-d'),
-                'reason' => $l->reason,
-                'attachmentUrl' => $l->attachment_url,
-                'status' => $l->status,
-                'rejectionReason' => $l->rejection_reason,
-                'createdAt' => $l->created_at,
-            ];
-        });
-
-        return response()->json($leaves);
     }
 
     public function store(Request $request)
