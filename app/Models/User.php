@@ -30,6 +30,7 @@ class User extends Authenticatable
         'phone',
         'avatar_url',
         'is_default_password',
+        'fcm_token',
     ];
 
     protected $hidden = [

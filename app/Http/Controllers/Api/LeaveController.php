@@ -67,6 +67,7 @@ class LeaveController extends Controller
             'startDate' => 'required|date',
             'endDate' => 'required|date',
             'reason' => 'required|string',
+            'attachment' => 'nullable|file|image|max:2048', // 2MB Max
         ]);
 
         $user = $request->user();
@@ -87,9 +88,46 @@ class LeaveController extends Controller
         $leave->start_date = $request->startDate;
         $leave->end_date = $request->endDate;
         $leave->reason = $request->reason;
-        $leave->attachment_url = $request->attachmentUrl;
+        if ($request->hasFile('attachment')) {
+            $path = $request->file('attachment')->store('leaves', 'public');
+            // Assuming default storage links to /storage
+            $leave->attachment_url = asset('storage/' . $path);
+        }
         $leave->status = Leave::STATUS_PENDING;
         $leave->save();
+
+        // Notification Logic
+        try {
+            // 1. Notify Teacher
+            $teacherUser = $placement->teacher?->user;
+            if ($teacherUser && $teacherUser->fcm_token) {
+                $fcmService = app(\App\Services\FcmService::class);
+                $fcmService->sendNotification(
+                    $teacherUser->fcm_token,
+                    'Pengajuan Izin Baru',
+                    "Siswa {$user->name} mengajukan izin: {$request->type}"
+                );
+            }
+
+            // 2. Notify Mentors of the DUDI
+            if ($placement->dudi_id) {
+                $mentors = Mentor::where('dudi_id', $placement->dudi_id)->with('user')->get();
+                $fcmService = $fcmService ?? app(\App\Services\FcmService::class);
+
+                foreach ($mentors as $mentor) {
+                    if ($mentor->user && $mentor->user->fcm_token) {
+                        $fcmService->sendNotification(
+                            $mentor->user->fcm_token,
+                            'Pengajuan Izin Baru',
+                            "Siswa {$user->name} mengajukan izin: {$request->type}"
+                        );
+                    }
+                }
+            }
+
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("Failed to send leave notification: " . $e->getMessage());
+        }
 
         return response()->json([
             'id' => $leave->id,

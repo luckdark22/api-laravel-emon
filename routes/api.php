@@ -40,6 +40,8 @@ Route::middleware('jwt.auth')->group(function () {
     // Auth
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
+    Route::post('/fcm-token', [App\Http\Controllers\Api\UserTokenController::class, 'update']);
+    Route::post('/notifications/send', [App\Http\Controllers\Api\NotificationController::class, 'send']);
 
     // Academic Years
     Route::get('/academic-years', [AcademicYearController::class, 'index']);

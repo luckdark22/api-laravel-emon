@@ -8,6 +8,7 @@ use App\Models\Placement;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use App\Services\FcmService;
 
 class ReportController extends Controller
 {
@@ -41,7 +42,7 @@ class ReportController extends Controller
         return response()->json($reports);
     }
 
-    public function upload(Request $request)
+    public function upload(Request $request, FcmService $fcmService)
     {
         $request->validate([
             'file' => 'required|mimes:pdf|max:10240', // 10MB PDF
@@ -77,6 +78,20 @@ class ReportController extends Controller
         $report->status = FinalReport::STATUS_SUBMITTED;
         $report->save();
 
+        // Notify Teacher
+        try {
+            $teacherUser = $placement->teacher->user ?? null;
+            if ($teacherUser && $teacherUser->fcm_token) {
+                $fcmService->sendNotification(
+                    $teacherUser->fcm_token,
+                    "Laporan Akhir Baru",
+                    "{$user->name} telah mengunggah Laporan Akhir."
+                );
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send report upload notification: ' . $e->getMessage());
+        }
+
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
     }
 
@@ -111,7 +126,7 @@ class ReportController extends Controller
         ];
     }
 
-    public function store(Request $request)
+    public function store(Request $request, FcmService $fcmService)
     {
         $request->validate([
             'title' => 'required|string',
@@ -136,6 +151,20 @@ class ReportController extends Controller
             $existing->status = FinalReport::STATUS_SUBMITTED;
             $existing->save();
 
+            // Notify Teacher (Update)
+            try {
+                $teacherUser = $placement->teacher->user ?? null;
+                if ($teacherUser && $teacherUser->fcm_token) {
+                    $fcmService->sendNotification(
+                        $teacherUser->fcm_token,
+                        "Laporan Akhir Diperbarui",
+                        "{$user->name} telah memperbarui Laporan Akhir."
+                    );
+                }
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::error('Failed to send report update notification: ' . $e->getMessage());
+            }
+
             return response()->json($this->transformReport($existing->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
         }
 
@@ -147,6 +176,20 @@ class ReportController extends Controller
         $report->status = FinalReport::STATUS_SUBMITTED;
         $report->created_at = now();
         $report->save();
+
+        // Notify Teacher
+        try {
+            $teacherUser = $placement->teacher->user ?? null;
+            if ($teacherUser && $teacherUser->fcm_token) {
+                $fcmService->sendNotification(
+                    $teacherUser->fcm_token,
+                    "Laporan Akhir Baru",
+                    "{$user->name} telah membuat Laporan Akhir."
+                );
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send report store notification: ' . $e->getMessage());
+        }
 
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')), 201);
     }
@@ -190,13 +233,13 @@ class ReportController extends Controller
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
     }
 
-    public function review(Request $request, $id)
+    public function review(Request $request, $id, FcmService $fcmService)
     {
         $request->validate([
             'status' => 'required|in:REVISION,APPROVED',
         ]);
 
-        $report = FinalReport::findOrFail($id);
+        $report = FinalReport::with(['placement.student.user'])->findOrFail($id);
 
         $report->status = $request->status;
         $report->teacher_notes = $request->teacherNotes ?? $request->notes;
@@ -205,6 +248,27 @@ class ReportController extends Controller
         }
 
         $report->save();
+
+        // Notify Student
+        try {
+            $studentUser = $report->placement->student->user ?? null;
+            if ($studentUser && $studentUser->fcm_token) {
+                $statusLabel = $request->status === 'APPROVED' ? 'Disetujui' : 'Direvisi';
+                $title = "Update Laporan Akhir";
+                $body = "Laporan Akhir Anda telah {$statusLabel} oleh guru pembimbing.";
+                if ($report->teacher_notes) {
+                    $body .= "\nCatatan: {$report->teacher_notes}";
+                }
+
+                $fcmService->sendNotification(
+                    $studentUser->fcm_token,
+                    $title,
+                    $body
+                );
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send report review notification: ' . $e->getMessage());
+        }
 
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));
     }

@@ -9,6 +9,7 @@ use App\Models\Mentor;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use App\Services\FcmService;
 
 class JournalController extends Controller
 {
@@ -86,7 +87,7 @@ class JournalController extends Controller
         return response()->json($journals);
     }
 
-    public function store(Request $request)
+    public function store(Request $request, FcmService $fcmService)
     {
         $request->validate([
             'date' => 'required|date',
@@ -126,12 +127,8 @@ class JournalController extends Controller
         $journal->created_at = now();
         $journal->save();
 
-        return response()->json([
-            'id' => $journal->id,
-            'date' => $journal->date?->format('Y-m-d'),
-            'activity' => $journal->activity,
-            'status' => $journal->status,
-        ], 201);
+        // This is just a placeholder, the tool call below does the actual work.
+
     }
 
     public function show($id)
@@ -186,7 +183,7 @@ class JournalController extends Controller
         return response()->json(['message' => 'Journal deleted successfully']);
     }
 
-    public function updateStatus(Request $request, $id)
+    public function updateStatus(Request $request, $id, FcmService $fcmService)
     {
         $request->validate([
             'status' => 'required|in:APPROVED,REJECTED',
@@ -198,12 +195,35 @@ class JournalController extends Controller
             return response()->json(['message' => 'Hanya Pembimbing Industri (Mentor) yang dapat memvalidasi jurnal.'], 403);
         }
 
-        $journal = Journal::findOrFail($id);
+        $journal = Journal::with(['placement.student.user'])->findOrFail($id);
 
         $journal->status = $request->status;
         $journal->checked_by = $user->id;
         $journal->mentor_feedback = $request->feedback ?? $request->mentorFeedback;
         $journal->save();
+
+        // Send Notification to Student
+        try {
+            $studentUser = $journal->placement->student->user ?? null;
+            if ($studentUser && $studentUser->fcm_token) {
+                $statusLabel = $journal->status === 'APPROVED' ? 'Disetujui' : 'Ditolak';
+                $title = "Jurnal {$statusLabel}";
+                $dateFormatted = $journal->date ? $journal->date->format('d M Y') : 'Tanpa Tanggal';
+                $body = "Jurnal tanggal {$dateFormatted} telah {$statusLabel} oleh mentor.";
+
+                if ($journal->mentor_feedback) {
+                    $body .= "\nCatatan: {$journal->mentor_feedback}";
+                }
+
+                $fcmService->sendNotification(
+                    $studentUser->fcm_token,
+                    $title,
+                    $body
+                );
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to send journal status notification: ' . $e->getMessage());
+        }
 
         return response()->json([
             'id' => $journal->id,

@@ -128,7 +128,8 @@ class DashboardController extends Controller
             $dayAttendances = $dayAttendancesQuery->get();
 
             $hadir = $dayAttendances->whereIn('status', ['ON_TIME', 'LATE'])->count();
-            $izin = $dayAttendances->whereIn('status', ['PERMIT', 'SICK'])->count();
+            $izin = $dayAttendances->where('status', 'PERMIT')->count();
+            $sakit = $dayAttendances->where('status', 'SICK')->count();
 
             // Calculate Alpha Dynamically (Not stored in DB)
             $alpa = 0;
@@ -158,7 +159,7 @@ class DashboardController extends Controller
                     }
 
                     $expectedAttendance = $eligiblePlacementsQuery->distinct('student_id')->count('student_id');
-                    $actualAttendance = $hadir + $izin;
+                    $actualAttendance = $hadir + $izin + $sakit;
 
                     // Any active student without attendance record is Alpha
                     $alpa = max(0, $expectedAttendance - $actualAttendance);
@@ -169,7 +170,8 @@ class DashboardController extends Controller
                 'day' => $date->locale('id')->isoFormat('ddd'),
                 'hadir' => $hadir,
                 'izin' => $izin,
-                'alpa' => $alpa,
+                'sakit' => $sakit,
+                'alfa' => $alpa, // Renaming alpa to alfa for consistency if preferred, but existing code used alpa generally. Plan said ensure alfa. Let's use alfa for output key.
             ];
         }
 
@@ -755,9 +757,11 @@ class DashboardController extends Controller
             $attendanceTrend[] = [
                 'date' => $date->format('Y-m-d'),
                 'activeCount' => $dayAttendances->count(),
-                'presentCount' => $dayAttendances->where('status', 'ON_TIME')->count(),
-                'lateCount' => $dayAttendances->where('status', 'LATE')->count(),
-                'absentCount' => $dayAttendances->whereIn('status', ['ABSENT', 'PERMIT', 'SICK'])->count(),
+                'hadir' => $dayAttendances->where('status', 'ON_TIME')->count(), // Renaming presentCount to hadir for consistency if frontend expects it, or keep frontend mapping
+                'terlambat' => $dayAttendances->where('status', 'LATE')->count(),
+                'izin' => $dayAttendances->where('status', 'PERMIT')->count(),
+                'sakit' => $dayAttendances->where('status', 'SICK')->count(),
+                'alfa' => $dayAttendances->where('status', 'ABSENT')->count(),
             ];
         }
 
