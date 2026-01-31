@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class StudentController extends Controller
 {
@@ -66,38 +67,92 @@ class StudentController extends Controller
     {
         $request->validate([
             'name' => 'required|string',
-            'email' => 'required|email|unique:users,email',
-            'nis' => 'required|string|unique:students,nis',
+            'email' => [
+                'required',
+                'email',
+                Rule::unique('users')->whereNull('deleted_at')
+            ],
+            'nis' => [
+                'required',
+                'string',
+                Rule::unique('students')->whereNull('deleted_at')
+            ],
             'class' => 'required|string',
             'major' => 'required|string',
         ]);
 
         return DB::transaction(function () use ($request) {
-            $userId = Str::uuid()->toString();
             $defaultPassword = '123456';
+            $user = null;
+            $student = null;
 
-            $user = new User();
-            $user->id = $userId;
-            $user->name = $request->name;
-            $user->email = $request->email;
-            $user->password_hash = Hash::make($defaultPassword);
-            $user->role = User::ROLE_STUDENT;
-            $user->phone = $request->phone;
-            $user->is_default_password = true;
-            $user->save();
+            // 1. Handle User (Create or Restore)
+            $existingUser = User::withTrashed()->where('email', $request->email)->first();
 
-            $student = new Student();
-            $student->user_id = $userId;
-            $student->nis = $request->nis;
-            $student->class_name = $request->class;
-            $student->major = $request->major;
-            $student->address = $request->address;
-            $student->bio = $request->bio;
-            $student->academic_year = $request->academicYear;
-            $student->save();
+            if ($existingUser && $existingUser->trashed()) {
+                // Restore User
+                $existingUser->restore();
+                $existingUser->name = $request->name;
+                $existingUser->phone = $request->phone;
+                $existingUser->password_hash = Hash::make($defaultPassword);
+                $existingUser->is_default_password = true;
+                $existingUser->save();
+                $user = $existingUser;
+            } elseif (!$existingUser) {
+                // Create New User
+                $user = new User();
+                $user->id = Str::uuid()->toString();
+                $user->name = $request->name;
+                $user->email = $request->email;
+                $user->password_hash = Hash::make($defaultPassword);
+                $user->role = User::ROLE_STUDENT;
+                $user->phone = $request->phone;
+                $user->is_default_password = true;
+                $user->save();
+            } else {
+                // Should be caught by validation, but effectively unreachable if validation works
+                abort(409, 'Email already active.');
+            }
+
+            // 2. Handle Student (Create or Restore)
+            // Check if student exists by user_id OR nis
+            $existingStudent = Student::withTrashed()
+                ->where('user_id', $user->id)
+                ->orWhere('nis', $request->nis)
+                ->first();
+
+            if ($existingStudent) {
+                // If ID mismatch (NIS found on different user), we might have a conflict
+                // But simplified logic: Just restore/update found student
+                if ($existingStudent->trashed()) {
+                    $existingStudent->restore();
+                }
+                
+                // Update fields
+                $existingStudent->user_id = $user->id; // Ensure linked to correct user
+                $existingStudent->nis = $request->nis;
+                $existingStudent->class_name = $request->class;
+                $existingStudent->major = $request->major;
+                $existingStudent->address = $request->address;
+                $existingStudent->bio = $request->bio;
+                $existingStudent->academic_year = $request->academicYear;
+                $existingStudent->save();
+                $student = $existingStudent;
+            } else {
+                // Create New Student
+                $student = new Student();
+                $student->user_id = $user->id;
+                $student->nis = $request->nis;
+                $student->class_name = $request->class;
+                $student->major = $request->major;
+                $student->address = $request->address;
+                $student->bio = $request->bio;
+                $student->academic_year = $request->academicYear;
+                $student->save();
+            }
 
             return response()->json([
-                'user_id' => $userId,
+                'user_id' => $user->id,
                 'user' => [
                     'name' => $user->name,
                     'email' => $user->email,
