@@ -14,8 +14,19 @@ class FcmService
     public function __construct()
     {
         $path = storage_path('app/private/firebase_credentials.json');
+        Log::info('Checking FCM Credentials at: ' . $path);
+
         if (file_exists($path)) {
-            $this->credentialsData = json_decode(file_get_contents($path), true);
+            $content = file_get_contents($path);
+            $this->credentialsData = json_decode($content, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                Log::error('FCM Credentials JSON Decode Error: ' . json_last_error_msg());
+            } else {
+                Log::info('FCM Credentials loaded successfully.');
+            }
+        } else {
+            Log::error('FCM Credentials file NOT found at: ' . $path);
         }
     }
 

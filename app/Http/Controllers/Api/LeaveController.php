@@ -29,6 +29,9 @@ class LeaveController extends Controller
                     $query->whereHas('placement', function ($q) use ($mentor) {
                         $q->where('dudi_id', $mentor->dudi_id);
                     });
+                } else {
+                    // Mentor without DUDI should not see any leaves
+                    $query->whereRaw('1 = 0');
                 }
             } elseif ($user->role === User::ROLE_TEACHER) {
                 $query->whereHas('placement', function ($q) use ($user) {
@@ -40,7 +43,10 @@ class LeaveController extends Controller
                 $query->where('status', $request->status);
             }
 
-            $leaves = $query->orderBy('start_date', 'desc')->get()->map(function ($l) {
+            $limit = $request->query('limit', 10);
+            $leaves = $query->orderBy('start_date', 'desc')->paginate($limit);
+
+            $leaves->through(function ($l) {
                 return [
                     'id' => $l->id,
                     'placementId' => $l->placement_id,
