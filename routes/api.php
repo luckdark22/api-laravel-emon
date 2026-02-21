@@ -97,6 +97,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/attendance/status', [AttendanceController::class, 'status']);
     Route::get('/attendance/today', [AttendanceController::class, 'today']);
     Route::get('/attendance/filters', [AttendanceController::class, 'filters']);
+    Route::put('/placements/group/{id}', [PlacementController::class, 'bulkUpdate']);
     Route::get('/attendance/missing', [AttendanceController::class, 'missing']);
     Route::post('/attendance/clock-in', [AttendanceController::class, 'clockIn']);
     Route::post('/attendance/clock-out', [AttendanceController::class, 'clockOut']);
