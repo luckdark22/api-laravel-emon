@@ -56,7 +56,7 @@ class SendAttendanceReminders extends Command
 
                 // Check-in Reminder (15 mins before start)
                 if ($now->format('H:i') === $startTime->subMinutes($notificationWindow)->format('H:i')) {
-                    $this->sendReminder($fcmService, $student->user->fcm_token, 'Waktunya Masuk PKL!', '15 Menit lagi jam masuk PKL dimulai. Jangan lupa absen ya! 👋');
+                    $this->sendReminder($fcmService, $student->user->fcm_token, 'Waktunya Masuk PKL!', '15 Menit lagi jam masuk PKL dimulai. Jangan lupa absen ya! 👋', '/presensi');
                 }
 
                 // Check-out Reminder (15 mins before end)
@@ -66,7 +66,7 @@ class SendAttendanceReminders extends Command
                 // Actually, let's allow "15 mins before end"
                 $endTime = Carbon::createFromTimeString($dudi->work_end_time);
                 if ($now->format('H:i') === $endTime->subMinutes($notificationWindow)->format('H:i')) {
-                    $this->sendReminder($fcmService, $student->user->fcm_token, 'Waktunya Pulang PKL!', '15 Menit lagi jam pulang. Jangan lupa absen pulang saat selesai! 🏠');
+                    $this->sendReminder($fcmService, $student->user->fcm_token, 'Waktunya Pulang PKL!', '15 Menit lagi jam pulang. Jangan lupa absen pulang saat selesai! 🏠', '/presensi');
                 }
 
             } catch (\Exception $e) {
@@ -75,10 +75,11 @@ class SendAttendanceReminders extends Command
         }
     }
 
-    private function sendReminder($fcmService, $token, $title, $body)
+    private function sendReminder($fcmService, $token, $title, $body, $url = null)
     {
         $this->info("Sending to token: " . substr($token, 0, 10) . "...");
-        $success = $fcmService->sendNotification($token, $title, $body);
+        $data = $url ? ['url' => $url] : [];
+        $success = $fcmService->sendNotification($token, $title, $body, $data);
         if ($success) {
             $this->info("Notification sent successfully.");
         } else {

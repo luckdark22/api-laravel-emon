@@ -89,7 +89,7 @@ class FcmService
                     'title' => $title,
                     'body' => $body,
                 ],
-                // 'data' => $data // Optional data payload
+                'data' => (object)$data // Use object to ensure JSON {} if empty
             ]
         ];
 

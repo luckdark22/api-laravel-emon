@@ -60,9 +60,17 @@ class ReportController extends Controller
 
         // Handle File Upload
         $file = $request->file('file');
+        
+        // Delete old file if exists
+        $report = FinalReport::where('placement_id', $placement->id)->first();
+        if ($report && $report->file_url) {
+            $oldPath = str_replace('storage/', '', $report->file_url);
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($oldPath);
+        }
+
         $fileName = 'report_' . $placement->id . '_' . time() . '.' . $file->getClientOriginalExtension();
         $path = $file->storeAs('reports', $fileName, 'public');
-        $fileUrl = asset('storage/' . $path);
+        $fileUrl = 'storage/' . $path;
 
         // Create or Update Report
         $report = FinalReport::where('placement_id', $placement->id)->first();
@@ -85,7 +93,8 @@ class ReportController extends Controller
                 $fcmService->sendNotification(
                     $teacherUser->fcm_token,
                     "Laporan Akhir Baru",
-                    "{$user->name} telah mengunggah Laporan Akhir."
+                    "{$user->name} telah mengunggah Laporan Akhir.",
+                    ['url' => '/laporan']
                 );
             }
         } catch (\Exception $e) {
@@ -97,6 +106,13 @@ class ReportController extends Controller
 
     private function transformReport($r)
     {
+        $assessments = $r->placement->assessments ?? collect();
+        $dudiAvg = $assessments->count() > 0 ? $assessments->avg('final_score') : 0;
+        $reportGrade = $r->final_grade ?? $dudiAvg; // Fallback to dudiAvg if no teacher grade yet
+        
+        // Cumulative calculation: (DUDI Average + Report Grade) / 2
+        $combinedGrade = ($dudiAvg + $reportGrade) / 2;
+
         return [
             'id' => $r->id,
             'placementId' => $r->placement_id,
@@ -105,12 +121,15 @@ class ReportController extends Controller
             'dudiName' => $r->placement->dudi->name ?? '',
             'dudiLogo' => $r->placement->dudi->logo ? (str_starts_with($r->placement->dudi->logo, 'http') ? $r->placement->dudi->logo : asset('storage/uploads/logos/' . $r->placement->dudi->logo)) : null,
             'teacherName' => $r->placement->teacher->user->name ?? '',
-            'fileUrl' => $r->file_url,
+            'fileUrl' => $r->file_url ? (str_starts_with($r->file_url, 'http') ? $r->file_url : asset($r->file_url)) : null,
             'title' => $r->title,
             'status' => $r->status,
             'teacherNotes' => $r->teacher_notes,
-            'finalGrade' => $r->final_grade,
-            'createdAt' => $r->created_at,
+            'finalGrade' => $reportGrade,
+            'dudiAvg' => round($dudiAvg, 2),
+            'cumulativeGrade' => round($combinedGrade, 2),
+            'resultStatus' => $r->status === 'APPROVED' ? 'Lulus' : 'Belum Lulus',
+            'createdAt' => $r->created_at->format('Y-m-d H:i:s'),
             'assessments' => isset($r->placement->assessments) ? $r->placement->assessments->map(function ($a) {
                 return [
                     'id' => $a->id,
@@ -158,7 +177,8 @@ class ReportController extends Controller
                     $fcmService->sendNotification(
                         $teacherUser->fcm_token,
                         "Laporan Akhir Diperbarui",
-                        "{$user->name} telah memperbarui Laporan Akhir."
+                        "{$user->name} telah memperbarui Laporan Akhir.",
+                        ['url' => '/laporan']
                     );
                 }
             } catch (\Exception $e) {
@@ -184,7 +204,8 @@ class ReportController extends Controller
                 $fcmService->sendNotification(
                     $teacherUser->fcm_token,
                     "Laporan Akhir Baru",
-                    "{$user->name} telah membuat Laporan Akhir."
+                    "{$user->name} telah membuat Laporan Akhir.",
+                    ['url' => '/laporan']
                 );
             }
         } catch (\Exception $e) {
@@ -243,31 +264,45 @@ class ReportController extends Controller
 
         $report->status = $request->status;
         $report->teacher_notes = $request->teacherNotes ?? $request->notes;
-        if ($request->has('finalGrade')) {
-            $report->final_grade = $request->finalGrade;
+        if ($request->has('finalGrade') || $request->has('grade')) {
+            $report->final_grade = $request->finalGrade ?? $request->grade;
+        }
+
+        if ($request->hasFile('file')) {
+            $file = $request->file('file');
+            // Matching the exact pattern from uploadReport
+            $extension = $file->getClientOriginalExtension() ?: 'pdf';
+            $fileName = 'report_revised_' . $report->id . '_' . time() . '.' . $extension;
+            $path = $file->storeAs('reports', $fileName, 'public');
+            $report->file_url = 'storage/' . $path;
         }
 
         $report->save();
 
-        // Notify Student
+        \Illuminate\Support\Facades\Log::info('Report review saved successfully', ['id' => $id, 'grade' => $report->final_grade]);
+
+        // Notify Student (Handle errors silently to prevent blocking)
         try {
             $studentUser = $report->placement->student->user ?? null;
             if ($studentUser && $studentUser->fcm_token) {
+                // We use a small trick: if it's local env, maybe skip or shorten timeout if possible
+                // For now, just ensure it's in a safe block
                 $statusLabel = $request->status === 'APPROVED' ? 'Disetujui' : 'Direvisi';
                 $title = "Update Laporan Akhir";
                 $body = "Laporan Akhir Anda telah {$statusLabel} oleh guru pembimbing.";
                 if ($report->teacher_notes) {
                     $body .= "\nCatatan: {$report->teacher_notes}";
                 }
-
+                
                 $fcmService->sendNotification(
                     $studentUser->fcm_token,
                     $title,
-                    $body
+                    $body,
+                    ['url' => '/laporan']
                 );
             }
         } catch (\Exception $e) {
-            \Illuminate\Support\Facades\Log::error('Failed to send report review notification: ' . $e->getMessage());
+            \Illuminate\Support\Facades\Log::warning('Silent notification failure: ' . $e->getMessage());
         }
 
         return response()->json($this->transformReport($report->load('placement.student.user', 'placement.dudi', 'placement.teacher.user', 'placement.assessments')));

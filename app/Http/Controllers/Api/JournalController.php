@@ -16,7 +16,7 @@ class JournalController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $query = Journal::with(['placement.student.user', 'placement.dudi', 'checkedByMentor.user'])
+        $query = Journal::with(['placement.student.user', 'placement.dudi.mentors.user', 'checkedByMentor.user'])
             ->whereHas('placement.student', function ($q) {
                 $q->whereNull('deleted_at');
             });
@@ -72,12 +72,14 @@ class JournalController extends Controller
                 'studentName' => $j->placement->student->user->name ?? '',
                 'studentNis' => $j->placement->student->nis ?? '',
                 'dudiName' => $j->placement->dudi->name ?? '',
+                'dudiAddress' => $j->placement->dudi->address ?? '', // Add this line
                 'date' => $j->date?->format('Y-m-d'),
                 'activity' => $j->activity,
                 'description' => $j->description,
                 'attachmentUrl' => $j->attachment_url,
                 'status' => $j->status,
                 'mentorFeedback' => $j->mentor_feedback,
+                'mentorName' => $j->placement->dudi->mentors->first()->user->name ?? '-',
                 'checkedBy' => $j->checked_by,
                 'checkedByName' => $j->checkedByMentor->user->name ?? null,
                 'createdAt' => $j->created_at,
@@ -218,7 +220,8 @@ class JournalController extends Controller
                 $fcmService->sendNotification(
                     $studentUser->fcm_token,
                     $title,
-                    $body
+                    $body,
+                    ['url' => '/jurnal']
                 );
             }
         } catch (\Exception $e) {

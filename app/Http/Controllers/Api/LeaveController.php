@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\Mentor;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use App\Services\FcmService;
 
 class LeaveController extends Controller
 {
@@ -113,11 +114,12 @@ class LeaveController extends Controller
             $teacherUser = $placement->teacher?->user;
             if ($teacherUser && $teacherUser->fcm_token) {
                 $fcmService = app(\App\Services\FcmService::class);
-                $fcmService->sendNotification(
-                    $teacherUser->fcm_token,
-                    'Pengajuan Izin Baru',
-                    "Siswa {$user->name} mengajukan izin: {$request->type}"
-                );
+                    $fcmService->sendNotification(
+                        $teacherUser->fcm_token,
+                        'Pengajuan Izin Baru',
+                        "Siswa {$user->name} mengajukan izin: {$request->type}",
+                        ['url' => '/approval/leaves']
+                    );
             }
 
             // 2. Notify Mentors of the DUDI
@@ -130,7 +132,8 @@ class LeaveController extends Controller
                         $fcmService->sendNotification(
                             $mentor->user->fcm_token,
                             'Pengajuan Izin Baru',
-                            "Siswa {$user->name} mengajukan izin: {$request->type}"
+                            "Siswa {$user->name} mengajukan izin: {$request->type}",
+                            ['url' => '/approval/leaves']
                         );
                     }
                 }
@@ -195,8 +198,7 @@ class LeaveController extends Controller
 
         return response()->json(['message' => 'Leave deleted successfully']);
     }
-
-    public function updateStatus(Request $request, $id)
+    public function updateStatus(Request $request, $id, FcmService $fcmService)
     {
         $request->validate([
             'status' => 'required|in:APPROVED,REJECTED',
@@ -209,6 +211,28 @@ class LeaveController extends Controller
             $leave->rejection_reason = $request->rejectionReason;
         }
         $leave->save();
+
+        // Notify Student
+        try {
+            $studentUser = $leave->placement->student->user ?? null;
+            if ($studentUser && $studentUser->fcm_token) {
+                $statusLabel = $leave->status === 'APPROVED' ? 'Disetujui' : 'Ditolak';
+                $title = "Update Pengajuan Izin";
+                $body = "Pengajuan izin Anda telah {$statusLabel}.";
+                if ($leave->rejection_reason) {
+                    $body .= "\nAlasan: {$leave->rejection_reason}";
+                }
+
+                $fcmService->sendNotification(
+                    $studentUser->fcm_token,
+                    $title,
+                    $body,
+                    ['url' => '/izin']
+                );
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("Failed to send leave update notification: " . $e->getMessage());
+        }
 
         return response()->json([
             'id' => $leave->id,
