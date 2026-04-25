@@ -151,6 +151,7 @@ class AssessmentController extends Controller
                 'startDate' => $p->dudi->start_date?->format('Y-m-d'),
                 'endDate' => $p->dudi->end_date?->format('Y-m-d'),
                 'reportStatus' => $p->finalReport->status ?? null,
+                'reportGrade' => $p->finalReport->final_grade ?? 0,
                 'assessments' => $p->assessments->map(function ($a) {
                     return $this->transformAssessment($a);
                 }),
