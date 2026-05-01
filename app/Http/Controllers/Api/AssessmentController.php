@@ -81,8 +81,8 @@ class AssessmentController extends Controller
             'school' => $schoolName,
             'dudi' => $placement->dudi->name ?? '',
             'academicYear' => $placement->academicYear->name ?? '',
-            'startDate' => $placement->dudi->start_date?->format('Y-m-d'),
-            'endDate' => $placement->dudi->end_date?->format('Y-m-d'),
+            'startDate' => $placement->dudi->start_date ? \Carbon\Carbon::parse($placement->dudi->start_date)->toDateString() : null,
+            'endDate' => $placement->dudi->end_date ? \Carbon\Carbon::parse($placement->dudi->end_date)->toDateString() : null,
             'assessments' => $placement->assessments->map(function ($a) {
                 return $this->transformAssessment($a);
             }),
@@ -148,8 +148,8 @@ class AssessmentController extends Controller
                 'school' => $schoolName,
                 'dudi' => $p->dudi->name ?? '',
                 'academicYear' => $p->academicYear->name ?? '',
-                'startDate' => $p->dudi->start_date?->format('Y-m-d'),
-                'endDate' => $p->dudi->end_date?->format('Y-m-d'),
+                'startDate' => $p->dudi->start_date ? \Carbon\Carbon::parse($p->dudi->start_date)->toDateString() : null,
+                'endDate' => $p->dudi->end_date ? \Carbon\Carbon::parse($p->dudi->end_date)->toDateString() : null,
                 'reportStatus' => $p->finalReport->status ?? null,
                 'reportGrade' => $p->finalReport->final_grade ?? 0,
                 'assessments' => $p->assessments->map(function ($a) {
